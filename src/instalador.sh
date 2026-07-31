@@ -251,6 +251,32 @@ def bitacora_reciente(limit=50, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM bitacora ORDER BY id DESC LIMIT ?",(limit,))]
 
+def bitacora_filtrada(filtros, db_path=DEFAULT_DB):
+    def val(v): return v[0] if isinstance(v,list) else v
+    where=[]; args=[]
+    if filtros.get("fecha_desde"):
+        where.append("fecha_hora >= ?"); args.append(val(filtros["fecha_desde"]))
+    if filtros.get("fecha_hasta"):
+        where.append("fecha_hora <= ?"); args.append(val(filtros["fecha_hasta"]))
+    for k,col in (("codigo","codigo"),("cap_code","cap_code"),("estado","estado"),("interno","interno_origen")):
+        v=filtros.get(k)
+        v=val(v) if v else ""
+        if v: where.append(f"{col} LIKE ?"); args.append(f"%{v}%")
+    sql="SELECT * FROM bitacora"
+    if where: sql+=" WHERE "+" AND ".join(where)
+    sql+=" ORDER BY id DESC LIMIT 5000"
+    with get_conn(db_path) as conn:
+        return [dict(r) for r in conn.execute(sql,args)]
+
+def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
+    import subprocess, sys
+    if not codigo or not mensaje: return {"status":"error","detalle":"falta código o mensaje"}
+    handler="/var/lib/asterisk/agi-bin/pocsag_handler.py"
+    if not os.path.exists(handler): handler="/opt/pocsag-server/agi/pocsag_handler.py"
+    rc=subprocess.run([sys.executable,handler,origen,codigo,mensaje],capture_output=True,text=True)
+    if rc.returncode==0: return {"status":"enviado"}
+    return {"status":"error","detalle":rc.stderr.strip() or "falló el envío"}
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv)>1 and sys.argv[1]=="init": init_db(); print("Base de datos inicializada.")
@@ -483,12 +509,13 @@ EOF
 # --- backend/app.py ---
 cat > "${APP_DIR}/backend/app.py" <<'EOF'
 #!/usr/bin/env python3
-import os, sys, json
+import os, sys, json, csv, io, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, "/opt/pocsag-server")
 from database.db_manager import (listar_pagers, crear_pager, actualizar_pager, borrar_pager,
     listar_grupos, crear_grupo, actualizar_grupo, borrar_grupo,
-    all_config, set_config, bitacora_reciente)
+    all_config, set_config, bitacora_reciente, bitacora_filtrada, enviar_mensaje)
 
 HOST=os.environ.get("POCSAG_API_HOST","0.0.0.0")
 PORT=int(os.environ.get("POCSAG_API_PORT","8080"))
@@ -503,18 +530,44 @@ def jr(h,d,c=200):
 def read_body(h):
     ln=int(h.headers.get("Content-Length",0)); return json.loads(h.rfile.read(ln) or b"{}")
 
+AST_BIN="asterisk"
+SAFE_CMDS={"status":"core show status","version":"core show version","peers":"pjsip show endpoints",
+           "channels":"core show channels","uptime":"core show uptime","dialplan":"dialplan show"}
+def ast_run(cmd):
+    try:
+        r=subprocess.run([AST_BIN,"-rx",cmd],capture_output=True,text=True,timeout=10)
+        return (r.stdout or "")+(r.stderr or "")
+    except Exception as e:
+        return f"Error: {e}"
+
 class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204); self.send_header("Access-Control-Allow-Origin","*")
         self.send_header("Access-Control-Allow-Methods","GET,POST,PUT,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers","Content-Type"); self.end_headers()
     def do_GET(self):
-        p=self.path
+        u=urlparse(self.path); p=u.path; q=parse_qs(u.query)
         if p=="/api/pagers": return jr(self,listar_pagers())
         if p=="/api/grupos": return jr(self,listar_grupos())
         if p=="/api/config": return jr(self,all_config())
-        if p=="/api/bitacora": return jr(self,bitacora_reciente(50))
         if p=="/api/health": return jr(self,{"status":"ok"})
+        if p=="/api/bitacora":
+            return jr(self,bitacora_filtrada(q) if q else bitacora_reciente(50))
+        if p=="/api/bitacora/export":
+            rows=bitacora_filtrada(q) if q else bitacora_reciente(10000)
+            out=io.StringIO(); out.write('\ufeff')
+            w=csv.writer(out); w.writerow(["Fecha/Hora","Interno","Codigo","CapCode","Mensaje","Baudios","Estado","Observaciones"])
+            for r in rows:
+                w.writerow([r.get("fecha_hora"),r.get("interno_origen"),r.get("codigo"),r.get("cap_code"),
+                            r.get("mensaje"),r.get("baudios"),r.get("estado"),r.get("observaciones")])
+            data=out.getvalue().encode("utf-8")
+            self.send_response(200); self.send_header("Content-Type","text/csv; charset=utf-8")
+            self.send_header("Content-Disposition",'attachment; filename="bitacora_pocsag.csv"')
+            self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data); return
+        if p=="/api/asterisk":
+            sub=q.get("cmd",["status"])[0]; acmd=SAFE_CMDS.get(sub)
+            if not acmd: return jr(self,{"error":"comando no permitido"},400)
+            return jr(self,{"cmd":sub,"salida":ast_run(acmd)})
         if p in ("/","/index.html"):
             f=os.path.join(FRONT,"index.html")
             if os.path.exists(f):
@@ -526,7 +579,13 @@ class H(BaseHTTPRequestHandler):
         try:
             if p=="/api/pagers": return jr(self,{"id":crear_pager(data)})
             if p=="/api/grupos": return jr(self,{"id":crear_grupo(data)})
-            return self.send_response(404); self.end_headers()
+            if p=="/api/enviar":
+                return jr(self, enviar_mensaje(data.get("codigo",""), data.get("mensaje",""), data.get("origen","web")))
+            if p=="/api/asterisk/reload":
+                return jr(self,{"salida":ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")})
+            if p=="/api/asterisk/restart":
+                return jr(self,{"salida":ast_run("core restart now")})
+            self.send_response(404); self.end_headers()
         except Exception as e: return jr(self,{"error":str(e)},400)
     def do_PUT(self):
         parts=self.path.split("/"); data=read_body(self)
@@ -557,42 +616,83 @@ mkx "${APP_DIR}/backend/app.py"
 cat > "${APP_DIR}/frontend/index.html" <<'EOF'
 <!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>POCSAG - Paginación Hospitalaria</title>
-<style>body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}
+<style>
+body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}
 header{background:#1e293b;padding:1rem 2rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center}
-h1{margin:0;font-size:1.25rem}main{padding:2rem;display:grid;gap:1.5rem}
-.card{background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1.25rem}
-.card h2{margin-top:0;font-size:1rem;color:#38bdf8;display:flex;justify-content:space-between;align-items:center}
-table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.45rem;border-bottom:1px solid #334155}th{color:#94a3b8}
-input,select{background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:.3rem;padding:.35rem .5rem;font-size:.85rem;width:100%;box-sizing:border-box}
+h1{margin:0;font-size:1.25rem}
+nav{display:flex;gap:.3rem;flex-wrap:wrap;padding:.8rem 2rem;background:#1e293b;border-bottom:1px solid #334155}
+nav button{background:#0f172a;border:1px solid #334155;color:#94a3b8;border-radius:.3rem;padding:.4rem .9rem;cursor:pointer;font-size:.85rem}
+nav button.active{background:#0ea5e9;color:#fff;border-color:#0ea5e9}
+main{padding:1.5rem 2rem;display:grid;gap:1.2rem;max-width:1200px;margin:auto}
+.tab{display:none}.tab.active{display:block}
+.card{background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1.2rem;margin-bottom:1rem}
+.card h2{margin:0 0 .8rem;font-size:1rem;color:#38bdf8;display:flex;justify-content:space-between;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:.83rem}th,td{text-align:left;padding:.4rem;border-bottom:1px solid #334155}th{color:#94a3b8}
+input,select,textarea{background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:.3rem;padding:.35rem .5rem;font-size:.85rem;width:100%;box-sizing:border-box}
 button{cursor:pointer;border:none;border-radius:.3rem;padding:.4rem .8rem;font-size:.85rem;font-weight:600}
 .btn{background:#0ea5e9;color:#fff}.btn:hover{background:#0284c7}
 .btn-del{background:#dc2626;color:#fff}.btn-del:hover{background:#b91c1c}
 .btn-add{background:#16a34a;color:#fff}.btn-add:hover{background:#15803d}
-.row{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.6rem}.row>*{flex:1;min-width:80px}
+.btn-warn{background:#d97706;color:#fff}.btn-warn:hover{background:#b45309}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.5rem}.row>*{flex:1;min-width:90px}
 .badge{padding:.15rem .5rem;border-radius:9999px;font-size:.7rem;background:#334155}
 .ok{background:#064e3b;color:#6ee7b7}.err{background:#7f1d1d;color:#fca5a5}
-.hint{font-size:.75rem;color:#64748b;margin-top:.3rem}
+pre{background:#0f172a;border:1px solid #334155;border-radius:.3rem;padding:.8rem;overflow:auto;max-height:320px;font-size:.78rem;white-space:pre-wrap}
+label{display:block;font-size:.75rem;color:#94a3b8;margin:.3rem 0 .15rem}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}
-.modal.open{display:flex}.modal .card{width:90%;max-width:500px}
-label{display:block;font-size:.75rem;color:#94a3b8;margin:.4rem 0 .15rem}
+.modal.open{display:flex}.modal .card{width:92%;max-width:520px;margin:0}
+.filters{display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:.8rem}.filters>*{flex:1;min-width:120px}
+.filters .btn,.filters .btn-add{flex:0 0 auto}
 </style></head>
-<body><header><h1>🏥 Paginación POCSAG</h1><span id="h" class="badge">…</span></header>
+<body>
+<header><h1>🏥 Paginación POCSAG</h1><span id="h" class="badge">…</span></header>
+<nav>
+<button class="active" onclick="tab('enviar',event)">Enviar</button>
+<button onclick="tab('pagers',event)">Pagers</button>
+<button onclick="tab('grupos',event)">Grupos</button>
+<button onclick="tab('asterisk',event)">Asterisk</button>
+<button onclick="tab('bitacora',event)">Bitácora</button>
+<button onclick="tab('config',event)">Parámetros</button>
+</nav>
 <main>
-<section class="card"><h2>Pagers individuales <button class="btn-add" onclick="openPager()">+ Nuevo pager</button></h2>
-<table><thead><tr><th>Código</th><th>CapCode</th><th>Nombre</th><th>Apellido</th><th>Área</th><th>Baud</th><th></th></tr></thead>
-<tbody id="cod"></tbody></table></section>
-<section class="card"><h2>Grupos (hasta 20 capcodes) <button class="btn-add" onclick="openGrupo()">+ Nuevo grupo</button></h2>
-<table><thead><tr><th>Código</th><th>Nombre</th><th>CapCodes</th><th>Baud</th><th></th></tr></thead>
-<tbody id="grp"></tbody></table></section>
-<section class="card"><h2>Parámetros del sistema</h2>
+<div class="tab active" id="t-enviar"><div class="card"><h2>Enviar mensaje a pager/grupo</h2>
+<div class="row"><div><label>Código</label><select id="e_cod"></select></div><div><label>Mensaje</label><input id="e_msg" placeholder="Texto alfanumérico"></div></div>
+<button class="btn" onclick="enviar()">Enviar a pager</button>
+<div id="e_res" style="margin-top:.6rem"></div>
+</div></div>
+<div class="tab" id="t-pagers"><div class="card"><h2>Pagers individuales <button class="btn-add" onclick="openPager()">+ Nuevo pager</button></h2>
+<table><thead><tr><th>Código</th><th>CapCode</th><th>Nombre</th><th>Apellido</th><th>Área</th><th>Baud</th><th></th></tr></thead><tbody id="cod"></tbody></table></div></div>
+<div class="tab" id="t-grupos"><div class="card"><h2>Grupos (hasta 20 capcodes) <button class="btn-add" onclick="openGrupo()">+ Nuevo grupo</button></h2>
+<table><thead><tr><th>Código</th><th>Nombre</th><th>CapCodes</th><th>Baud</th><th></th></tr></thead><tbody id="grp"></tbody></table></div></div>
+<div class="tab" id="t-asterisk"><div class="card"><h2>Gestión de Asterisk</h2>
+<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem">
+<button class="btn" onclick="ast('status')">Estado</button>
+<button class="btn" onclick="ast('peers')">Endpoints</button>
+<button class="btn" onclick="ast('channels')">Canales</button>
+<button class="btn" onclick="ast('uptime')">Uptime</button>
+<button class="btn-warn" onclick="astReload()">Recargar config</button>
+<button class="btn-del" onclick="astRestart()">Reiniciar Asterisk</button>
+</div>
+<pre id="ast_out">—</pre>
+</div></div>
+<div class="tab" id="t-bitacora"><div class="card"><h2>Bitácora de envíos</h2>
+<div class="filters">
+<div><label>Desde</label><input id="b_desde" type="date"></div>
+<div><label>Hasta</label><input id="b_hasta" type="date"></div>
+<div><label>Código</label><input id="b_codigo" placeholder="ej 10"></div>
+<div><label>Interno</label><input id="b_interno" placeholder="ej 101"></div>
+<div><label>Estado</label><select id="b_estado"><option value="">Todos</option><option>enviado</option><option>error</option></select></div>
+<button class="btn" onclick="loadBit()">Filtrar</button>
+<button class="btn-add" onclick="exportBit()">Exportar Excel</button>
+</div>
+<table><thead><tr><th>Fecha</th><th>Interno</th><th>Código</th><th>Cap</th><th>Msg</th><th>Estado</th></tr></thead><tbody id="bit"></tbody></table>
+</div></div>
+<div class="tab" id="t-config"><div class="card"><h2>Parámetros del sistema</h2>
 <div class="row"><div><label>Timeout mensaje (seg)</label><input id="c_mensaje_timeout" type="number" step="1"></div>
 <div><label>PTT pre-activo (seg)</label><input id="c_ptt_preactivo" type="number" step="0.1"></div>
 <div><label>Timeout dígitos (seg)</label><input id="c_digit_timeout" type="number" step="1"></div>
 <div><label>Timeout respuesta (seg)</label><input id="c_response_timeout" type="number" step="1"></div></div>
-<div style="margin-top:.6rem"><button class="btn" onclick="saveConfig()">Guardar parámetros</button></div></section>
-<section class="card"><h2>Bitácora</h2>
-<table><thead><tr><th>Fecha</th><th>Interno</th><th>Código</th><th>Cap</th><th>Msg</th><th>Estado</th></tr></thead>
-<tbody id="bit"></tbody></table></section>
+<button class="btn" onclick="saveConfig()">Guardar parámetros</button></div></div>
 </main>
 <div class="modal" id="mPager"><div class="card"><h2 id="mPagerTitle">Pager</h2>
 <label>Código (marcado por DTMF)</label><input id="p_codigo">
@@ -600,45 +700,47 @@ label{display:block;font-size:.75rem;color:#94a3b8;margin:.4rem 0 .15rem}
 <div class="row"><div><label>Nombre</label><input id="p_nombre"></div><div><label>Apellido</label><input id="p_apellido"></div></div>
 <label>Área</label><input id="p_area">
 <div class="row"><div><label>Baudios</label><input id="p_baud" type="number" value="1200"></div><div><label>Descripción</label><input id="p_desc"></div></div>
-<div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="savePager()">Guardar</button><button class="btn-del" onclick="closeModal('mPager')">Cancelar</button></div>
-</div></div>
+<div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="savePager()">Guardar</button><button class="btn-del" onclick="closeModal('mPager')">Cancelar</button></div></div></div>
 <div class="modal" id="mGrupo"><div class="card"><h2 id="mGrupoTitle">Grupo</h2>
 <label>Código (marcado por DTMF)</label><input id="g_codigo">
 <label>Nombre</label><input id="g_nombre">
-<label>CapCodes (uno por línea, máx 20)</label>
-<textarea id="g_miembros" rows="6" style="width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:.3rem;padding:.4rem"></textarea>
+<label>CapCodes (uno por línea, máx 20)</label><textarea id="g_miembros" rows="6"></textarea>
 <div class="row" style="margin-top:.4rem"><div><label>Baudios</label><input id="g_baud" type="number" value="1200"></div></div>
-<div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="saveGrupo()">Guardar</button><button class="btn-del" onclick="closeModal('mGrupo')">Cancelar</button></div>
-</div></div>
+<div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="saveGrupo()">Guardar</button><button class="btn-del" onclick="closeModal('mGrupo')">Cancelar</button></div></div></div>
 <script>
 const g=u=>fetch(u).then(r=>r.json());
 const badge=e=>e==='enviado'?`<span class="badge ok">${e}</span>`:`<span class="badge err">${e||'-'}</span>`;
 let editPager=null,editGrupo=null;
-async function load(){try{const h=await g('/api/health');document.getElementById('h').textContent=h.status==='ok'?'en línea':'caído';}catch(e){document.getElementById('h').textContent='caído';}
-const c=await g('/api/pagers');document.getElementById('cod').innerHTML=c.map(x=>`<tr><td>${x.codigo}</td><td>${x.cap_code}</td><td>${x.nombre||''}</td><td>${x.apellido||''}</td><td>${x.area||''}</td><td>${x.baudios}</td><td><button class="btn" onclick="openPager(${x.id})">✎</button> <button class="btn-del" onclick="delPager(${x.id})">✕</button></td></tr>`).join('');
-const gr=await g('/api/grupos');document.getElementById('grp').innerHTML=gr.map(x=>`<tr><td>${x.codigo}</td><td>${x.nombre||''}</td><td>${(x.miembros||[]).join(', ')}</td><td>${x.baudios}</td><td><button class="btn" onclick="openGrupo(${x.id})">✎</button> <button class="btn-del" onclick="delGrupo(${x.id})">✕</button></td></tr>`).join('');
-const b=await g('/api/bitacora');document.getElementById('bit').innerHTML=b.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join('');
-const cfg=await g('/api/config');['mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&cfg[k]!=null)el.value=cfg[k];});}
+function tab(id,e){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');e.target.classList.add('active');if(id==='bitacora')loadBit();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
+async function loadPagers(){const c=await g('/api/pagers');document.getElementById('cod').innerHTML=c.map(x=>`<tr><td>${x.codigo}</td><td>${x.cap_code}</td><td>${x.nombre||''}</td><td>${x.apellido||''}</td><td>${x.area||''}</td><td>${x.baudios}</td><td><button class="btn" onclick="openPager(${x.id})">✎</button> <button class="btn-del" onclick="delPager(${x.id})">✕</button></td></tr>`).join('');}
+async function loadCodigos(){const c=await g('/api/pagers');const gr=await g('/api/grupos');const s=document.getElementById('e_cod');s.innerHTML='';c.forEach(x=>{const o=document.createElement('option');o.value=x.codigo;o.textContent=`${x.codigo} — ${x.nombre||''} ${x.apellido||''} (${x.area||x.cap_code})`;s.appendChild(o);});gr.forEach(x=>{const o=document.createElement('option');o.value=x.codigo;o.textContent=`${x.codigo} — GRUPO: ${x.nombre||''} (${(x.miembros||[]).length} pagers)`;s.appendChild(o);});}
+async function loadGrupos(){const gr=await g('/api/grupos');document.getElementById('grp').innerHTML=gr.map(x=>`<tr><td>${x.codigo}</td><td>${x.nombre||''}</td><td>${(x.miembros||[]).join(', ')}</td><td>${x.baudios}</td><td><button class="btn" onclick="openGrupo(${x.id})">✎</button> <button class="btn-del" onclick="delGrupo(${x.id})">✕</button></td></tr>`).join('');}
+async function enviar(){const codigo=document.getElementById('e_cod').value,mensaje=document.getElementById('e_msg').value.trim();if(!codigo||!mensaje){document.getElementById('e_res').innerHTML='<span class="badge err">Falta código o mensaje</span>';return;}
+const r=await fetch('/api/enviar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigo,mensaje,origen:'web'})}).then(r=>r.json());
+document.getElementById('e_res').innerHTML=r.status==='enviado'?'<span class="badge ok">Enviado correctamente</span>':`<span class="badge err">Error: ${r.detalle||''}</span>`;loadBit();}
 async function openPager(id){editPager=id||null;const p=await g('/api/pagers');const x=id?p.find(i=>i.id===id):null;
 ['codigo','cap','nombre','apellido','area','desc'].forEach(f=>document.getElementById('p_'+f).value=x?x[f==='cap'?'cap_code':f]||'':'');
 document.getElementById('p_baud').value=x?x.baudios:1200;document.getElementById('mPagerTitle').textContent=id?'Editar pager':'Nuevo pager';openModal('mPager');}
 async function savePager(){const d={codigo:document.getElementById('p_codigo').value,cap_code:document.getElementById('p_cap').value,nombre:document.getElementById('p_nombre').value,apellido:document.getElementById('p_apellido').value,area:document.getElementById('p_area').value,baudios:+document.getElementById('p_baud').value,descripcion:document.getElementById('p_desc').value};
-if(editPager)await fetch('/api/pagers/'+editPager,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-else await fetch('/api/pagers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});closeModal('mPager');load();}
-async function delPager(id){if(confirm('¿Eliminar pager?')){await fetch('/api/pagers/'+id,{method:'DELETE'});load();}}
+if(editPager)await fetch('/api/pagers/'+editPager,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});else await fetch('/api/pagers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});closeModal('mPager');loadPagers();loadCodigos();}
+async function delPager(id){if(confirm('¿Eliminar pager?')){await fetch('/api/pagers/'+id,{method:'DELETE'});loadPagers();loadCodigos();}}
 async function openGrupo(id){editGrupo=id||null;const gr=await g('/api/grupos');const x=id?gr.find(i=>i.id===id):null;
-document.getElementById('g_codigo').value=x?x.codigo:'';document.getElementById('g_nombre').value=x?x.nombre||'':'';
-document.getElementById('g_miembros').value=x?(x.miembros||[]).join('\n'):'';
-document.getElementById('g_baud').value=x?x.baudios:1200;document.getElementById('mGrupoTitle').textContent=id?'Editar grupo':'Nuevo grupo';openModal('mGrupo');}
+document.getElementById('g_codigo').value=x?x.codigo:'';document.getElementById('g_nombre').value=x?x.nombre||'':'';document.getElementById('g_miembros').value=x?(x.miembros||[]).join('\n'):'';document.getElementById('g_baud').value=x?x.baudios:1200;document.getElementById('mGrupoTitle').textContent=id?'Editar grupo':'Nuevo grupo';openModal('mGrupo');}
 async function saveGrupo(){const d={codigo:document.getElementById('g_codigo').value,nombre:document.getElementById('g_nombre').value,baudios:+document.getElementById('g_baud').value,miembros:document.getElementById('g_miembros').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,20)};
-if(editGrupo)await fetch('/api/grupos/'+editGrupo,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-else await fetch('/api/grupos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});closeModal('mGrupo');load();}
-async function delGrupo(id){if(confirm('¿Eliminar grupo?')){await fetch('/api/grupos/'+id,{method:'DELETE'});load();}}
-async function saveConfig(){const d={mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value};
-await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});alert('Parámetros guardados');load();}
-load();setInterval(load,5000);
+if(editGrupo)await fetch('/api/grupos/'+editGrupo,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});else await fetch('/api/grupos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});closeModal('mGrupo');loadGrupos();loadCodigos();}
+async function delGrupo(id){if(confirm('¿Eliminar grupo?')){await fetch('/api/grupos/'+id,{method:'DELETE'});loadGrupos();loadCodigos();}}
+async function loadConfig(){const cfg=await g('/api/config');['mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&cfg[k]!=null)el.value=cfg[k];});}
+async function saveConfig(){const d={mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value};await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});alert('Parámetros guardados');loadConfig();}
+function bitQuery(){const p=new URLSearchParams();const d=document.getElementById('b_desde').value,h=document.getElementById('b_hasta').value,c=document.getElementById('b_codigo').value,i=document.getElementById('b_interno').value,e=document.getElementById('b_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p.toString();}
+async function loadBit(){const qs=bitQuery();const b=await g('/api/bitacora'+(qs?('?'+qs):''));document.getElementById('bit').innerHTML=b.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join('');}
+function exportBit(){const qs=bitQuery();window.open('/api/bitacora/export'+(qs?('?'+qs):''),'_blank');}
+async function ast(cmd){const r=await g('/api/asterisk?cmd='+cmd);document.getElementById('ast_out').textContent=r.salida||r.error||'';}
+async function astReload(){if(!confirm('¿Recargar configuración de Asterisk?'))return;const r=await fetch('/api/asterisk/reload',{method:'POST'}).then(r=>r.json());document.getElementById('ast_out').textContent=r.salida||'';}
+async function astRestart(){if(!confirm('¿Reiniciar Asterisk? Se cortarán llamadas activas.'))return;const r=await fetch('/api/asterisk/restart',{method:'POST'}).then(r=>r.json());document.getElementById('ast_out').textContent=r.salida||'';}
+async function health(){try{const h=await g('/api/health');document.getElementById('h').textContent=h.status==='ok'?'en línea':'caído';}catch(e){document.getElementById('h').textContent='caído';}}
+(async()=>{health();loadPagers();loadGrupos();loadCodigos();loadConfig();loadBit();setInterval(health,10000);})();
 </script></body></html>
 EOF
 
