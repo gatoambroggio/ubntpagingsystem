@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, "/opt/pocsag-server")
 from database.db_manager import listar_codigos, bitacora_reciente  # noqa: E402
 
-HOST = os.environ.get("POCSAG_API_HOST", "0.0.0.0")
+HOST = os.environ.get("POCSAG_API_HOST", "127.0.0.1")
 PORT = int(os.environ.get("POCSAG_API_PORT", "8080"))
 FRONTEND_DIR = "/opt/pocsag-server/frontend"
 
