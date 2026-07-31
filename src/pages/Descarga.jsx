@@ -1,17 +1,45 @@
-import React from "react";
+import React, { useState } from "react";
+import JSZip from "jszip";
 import instaladorContent from "@/../instalador.sh?raw";
 
+// Carga el contenido de TODOS los archivos de src/ en build-time
+const srcFiles = import.meta.glob("/src/**/*", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+
 export default function Descarga() {
-  const descargar = () => {
-    const blob = new Blob([instaladorContent], { type: "application/x-sh" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "instalador.sh";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  const [busy, setBusy] = useState(false);
+  const [count, setCount] = useState(0);
+
+  const descargarZip = async () => {
+    setBusy(true);
+    try {
+      const zip = new JSZip();
+      let n = 0;
+      // Archivos individuales de src/
+      for (const [path, content] of Object.entries(srcFiles)) {
+        const rel = path.replace(/^\/src\//, "src/");
+        zip.file(rel, content);
+        n++;
+      }
+      // Instalador único en la raíz del zip
+      zip.file("instalador.sh", instaladorContent);
+      setCount(n);
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "pocsag-server-src.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -22,26 +50,31 @@ export default function Descarga() {
           <h1 className="text-2xl font-bold">Sistema POCSAG — Descarga</h1>
         </div>
         <p className="text-slate-300 mb-6 leading-relaxed">
-          Este archivo único contiene <strong>todo el sistema</strong> embebido
-          (Asterisk, AGI, codificador POCSAG, base de datos, API, panel web,
-          servicios y locuciones). Lo pasás al servidor Ubuntu y se instala con
-          un solo comando.
+          Descargá <strong>toda la carpeta <code className="text-emerald-400">src/</code></strong> del
+          proyecto en un único <code className="text-emerald-400">.zip</code>, más el
+          instalador único <code className="text-emerald-400">instalador.sh</code> que
+          contiene el sistema completo embebido.
         </p>
 
         <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 mb-6 font-mono text-sm">
-          <div className="text-slate-500"># 1) Descargar el archivo de arriba</div>
-          <div className="text-slate-300"># 2) Subirlo al servidor Ubuntu 22.04</div>
+          <div className="text-slate-500"># En el servidor Ubuntu 22.04</div>
           <div className="text-emerald-400">sudo bash instalador.sh</div>
         </div>
 
         <button
-          onClick={descargar}
-          className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+          onClick={descargarZip}
+          disabled={busy}
+          className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
         >
-          ⬇ Descargar instalador.sh
+          {busy ? "Empaquetando…" : "⬇ Descargar pocsag-server-src.zip"}
         </button>
 
-        <p className="text-xs text-slate-500 mt-4 text-center">
+        {count > 0 && (
+          <p className="text-xs text-slate-500 mt-4 text-center">
+            {count} archivos de src/ + instalador.sh incluidos
+          </p>
+        )}
+        <p className="text-xs text-slate-500 mt-2 text-center">
           Desinstalar luego: sudo /opt/pocsag-server/bin/uninstall.sh
         </p>
       </div>
