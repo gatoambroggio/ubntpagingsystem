@@ -36,6 +36,7 @@ const AuthenticatedApp = () => {
   return (
     <Routes>
       {/* Add your page Route elements here */}
+      <Route path="/" element={<Descarga />} />
       <Route path="/descarga" element={<Descarga />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
