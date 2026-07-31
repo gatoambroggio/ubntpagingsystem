@@ -12,7 +12,7 @@ APP_DIR="/opt/pocsag-server"
 AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
 
-G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; N="\033[0m"
+G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; NC="\033[0m"
 log()  { echo -e "${G}[OK]${NC}   $*"; }
 warn() { echo -e "${Y}[WARN]${NC} $*"; }
 err()  { echo -e "${R}[ERR]${NC}  $*" >&2; }
@@ -161,6 +161,31 @@ def listar_codigos(db_path=DEFAULT_DB):
 def bitacora_reciente(limit=20, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM bitacora ORDER BY id DESC LIMIT ?",(limit,))]
+
+def crear_codigo(codigo, tipo, cap_code, baudios, descripcion, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO codigos (codigo,tipo,cap_code,baudios,descripcion) VALUES (?,?,?,?,?)",
+                     (codigo,tipo,cap_code,baudios,descripcion))
+
+def actualizar_codigo(codigo, tipo, cap_code, baudios, descripcion, activo, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE codigos SET tipo=?,cap_code=?,baudios=?,descripcion=?,activo=? WHERE codigo=?",
+                     (tipo,cap_code,baudios,descripcion,activo,codigo))
+
+def borrar_codigo(codigo, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM codigos WHERE codigo=?",(codigo,))
+
+def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
+    import subprocess, sys
+    destino = resolver_codigo(codigo, db_path)
+    if not destino: return {"status":"error","detalle":"código no encontrado"}
+    cap_code, baudios, tipo = destino
+    handler = "/var/lib/asterisk/agi-bin/pocsag_handler.py"
+    if not os.path.exists(handler): handler = "/opt/pocsag-server/agi/pocsag_handler.py"
+    rc = subprocess.run([sys.executable, handler, origen, codigo, mensaje], capture_output=True, text=True)
+    if rc.returncode == 0: return {"status":"enviado","cap_code":cap_code,"baudios":baudios}
+    return {"status":"error","detalle":rc.stderr.strip() or "falló el envío"}
 
 if __name__ == "__main__":
     import sys
@@ -381,9 +406,9 @@ cat > "${APP_DIR}/backend/app.py" <<'EOF'
 import os, sys, json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, "/opt/pocsag-server")
-from database.db_manager import listar_codigos, bitacora_reciente
+from database.db_manager import listar_codigos, bitacora_reciente, crear_codigo, actualizar_codigo, borrar_codigo, enviar_mensaje
 
-HOST=os.environ.get("POCSAG_API_HOST","127.0.0.1")
+HOST=os.environ.get("POCSAG_API_HOST","0.0.0.0")
 PORT=int(os.environ.get("POCSAG_API_PORT","8080"))
 FRONT="/opt/pocsag-server/frontend"
 
@@ -393,6 +418,9 @@ def jr(h,d,c=200):
     h.send_header("Content-Length",str(len(b))); h.end_headers(); h.wfile.write(b)
 
 class H(BaseHTTPRequestHandler):
+    def _body(self):
+        n=int(self.headers.get("Content-Length",0))
+        return json.loads(self.rfile.read(n)) if n else {}
     def do_GET(self):
         if self.path=="/api/codigos": return jr(self,listar_codigos())
         if self.path=="/api/bitacora": return jr(self,bitacora_reciente(50))
@@ -403,6 +431,27 @@ class H(BaseHTTPRequestHandler):
                 self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers()
                 with open(f,"rb") as fh: self.wfile.write(fh.read()); return
         self.send_response(404); self.end_headers()
+    def do_POST(self):
+        try:
+            d=self._body()
+            if self.path=="/api/enviar":
+                return jr(self, enviar_mensaje(d.get("codigo",""), d.get("mensaje",""), d.get("origen","web")))
+            if self.path=="/api/codigos":
+                crear_codigo(d.get("codigo",""), d.get("tipo","individual"), d.get("cap_code",""), int(d.get("baudios",1200)), d.get("descripcion",""))
+                return jr(self,{"status":"ok"})
+            if self.path=="/api/codigos/update":
+                actualizar_codigo(d.get("codigo",""), d.get("tipo","individual"), d.get("cap_code",""), int(d.get("baudios",1200)), d.get("descripcion",""), int(d.get("activo",1)))
+                return jr(self,{"status":"ok"})
+            if self.path=="/api/codigos/delete":
+                borrar_codigo(d.get("codigo",""))
+                return jr(self,{"status":"ok"})
+            self.send_response(404); self.end_headers()
+        except Exception as e:
+            return jr(self,{"status":"error","detalle":str(e)},500)
+    def do_OPTIONS(self):
+        self.send_response(204); self.send_header("Access-Control-Allow-Origin","*")
+        self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers","Content-Type"); self.end_headers()
     def log_message(self,*a): pass
 
 if __name__=="__main__":
@@ -416,24 +465,82 @@ cat > "${APP_DIR}/frontend/index.html" <<'EOF'
 <!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>POCSAG</title>
 <style>body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}
-header{background:#1e293b;padding:1rem 2rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between}
-h1{margin:0;font-size:1.25rem}main{padding:2rem;display:grid;gap:1.5rem}
+header{background:#1e293b;padding:1rem 2rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:1.25rem}main{padding:2rem;display:grid;gap:1.5rem;max-width:1100px;margin:auto}
 .card{background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1.25rem}
 .card h2{margin-top:0;font-size:1rem;color:#38bdf8}table{width:100%;border-collapse:collapse;font-size:.85rem}
 th,td{text-align:left;padding:.5rem;border-bottom:1px solid #334155}th{color:#94a3b8}
 .badge{padding:.15rem .5rem;border-radius:9999px;font-size:.7rem;background:#334155}
-.ok{background:#064e3b;color:#6ee7b7}.err{background:#7f1d1d;color:#fca5a5}</style></head>
+.ok{background:#064e3b;color:#6ee7b7}.err{background:#7f1d1d;color:#fca5a5}
+input,select,button{font-family:inherit;font-size:.9rem;padding:.4rem .6rem;border-radius:.4rem;border:1px solid #334155;background:#0f172a;color:#e2e8f0}
+button{cursor:pointer;border:none}button:disabled{opacity:.5}
+.btn-env{background:#2563eb}.btn-env:hover{background:#3b82f6}.btn-del{background:#b91c1c}.btn-del:hover{background:#dc2626}
+.btn-edit{background:#475569}.btn-edit:hover{background:#64748b}.btn-save{background:#059669}.btn-save:hover{background:#10b981}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem}
+.row label{min-width:80px;color:#94a3b8;font-size:.8rem}
+.toast{position:fixed;bottom:1rem;right:1rem;padding:.75rem 1rem;border-radius:.5rem;background:#1e293b;border:1px solid #334155;opacity:0;transition:opacity .3s}
+.toast.show{opacity:1}td.act{display:flex;gap:.25rem}</style></head>
 <body><header><h1>🏥 Paginación POCSAG</h1><span id="h" class="badge">…</span></header>
-<main><section class="card"><h2>Códigos</h2><table><thead><tr><th>Código</th><th>Tipo</th><th>Cap Code</th><th>Baudios</th><th>Desc</th></tr></thead>
+<main>
+<section class="card"><h2>Enviar mensaje</h2>
+<div class="row"><label>Código</label><select id="e_cod" style="flex:1"></select></div>
+<div class="row"><label>Mensaje</label><input id="e_msg" style="flex:1" placeholder="Texto alfanumérico"></div>
+<div class="row"><button class="btn-env" onclick="enviar()">Enviar a pager</button></div>
+</section>
+<section class="card"><h2 id="ft">Crear código</h2>
+<div class="row"><label>Código</label><input id="f_cod" style="width:90px" placeholder="ej 23"><label>Tipo</label><select id="f_tipo"><option value="individual">individual</option><option value="grupo">grupo</option><option value="broadcast">broadcast</option></select></div>
+<div class="row"><label>Cap Code</label><input id="f_cap" style="width:140px" placeholder="ej 300023"><label>Baudios</label><select id="f_baud"><option>1200</option><option>512</option><option>2400</option></select></div>
+<div class="row"><label>Desc</label><input id="f_desc" style="flex:1" placeholder="descripción"></div>
+<div class="row" id="f_act_wrap" style="display:none"><label>Activo</label><select id="f_act"><option value="1">sí</option><option value="0">no</option></select></div>
+<div class="row"><button class="btn-save" id="f_btn" onclick="guardar()">Crear</button><button id="f_cancel" style="display:none" onclick="resetForm()">Cancelar</button></div>
+</section>
+<section class="card"><h2>Códigos</h2><table><thead><tr><th>Código</th><th>Tipo</th><th>Cap</th><th>Baud</th><th>Desc</th><th>Act</th><th></th></tr></thead>
 <tbody id="cod"></tbody></table></section>
 <section class="card"><h2>Bitácora</h2><table><thead><tr><th>Fecha</th><th>Interno</th><th>Código</th><th>Cap</th><th>Msg</th><th>Estado</th></tr></thead>
 <tbody id="bit"></tbody></table></section></main>
+<div class="toast" id="t"></div>
 <script>
 const g=u=>fetch(u).then(r=>r.json());
+const p=(u,d)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)}).then(r=>r.json());
+const toast=m=>{const t=document.getElementById('t');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);};
 const badge=e=>e==='enviado'?`<span class="badge ok">${e}</span>`:`<span class="badge err">${e||'-'}</span>`;
+let editing=null;
+async function enviar(){
+  const codigo=document.getElementById('e_cod').value, mensaje=document.getElementById('e_msg').value.trim();
+  if(!codigo||!mensaje) return toast('Elegí código y mensaje');
+  const r=await p('/api/enviar',{codigo,mensaje,origen:'web'});
+  toast(r.status==='enviado'?`Enviado a ${r.cap_code}`:`Error: ${r.detalle||''}`);
+  cargarBitacora();
+}
+function editar(c){const x=codigos.find(o=>o.codigo===c);if(!x)return;editing=c;
+  document.getElementById('ft').textContent='Modificar código '+c;
+  document.getElementById('f_cod').value=x.codigo;document.getElementById('f_cod').disabled=true;
+  document.getElementById('f_tipo').value=x.tipo;document.getElementById('f_cap').value=x.cap_code||'';
+  document.getElementById('f_baud').value=String(x.baudios);document.getElementById('f_desc').value=x.descripcion||'';
+  document.getElementById('f_act').value=String(x.activo);document.getElementById('f_act_wrap').style.display='flex';
+  document.getElementById('f_btn').textContent='Guardar';document.getElementById('f_cancel').style.display='inline-block';}
+function resetForm(){editing=null;
+  document.getElementById('ft').textContent='Crear código';document.getElementById('f_cod').disabled=false;
+  document.getElementById('f_cod').value='';document.getElementById('f_tipo').value='individual';
+  document.getElementById('f_cap').value='';document.getElementById('f_baud').value='1200';
+  document.getElementById('f_desc').value='';document.getElementById('f_act_wrap').style.display='none';
+  document.getElementById('f_btn').textContent='Crear';document.getElementById('f_cancel').style.display='none';}
+async function guardar(){
+  const d={codigo:document.getElementById('f_cod').value.trim(),tipo:document.getElementById('f_tipo').value,
+    cap_code:document.getElementById('f_cap').value.trim(),baudios:document.getElementById('f_baud').value,
+    descripcion:document.getElementById('f_desc').value.trim(),activo:document.getElementById('f_act').value};
+  if(!d.codigo) return toast('Falta código');
+  if(editing){await p('/api/codigos/update',d);toast('Actualizado');}else{await p('/api/codigos',d);toast('Creado');}
+  resetForm();cargarCodigos();}
+async function borrar(c){if(!confirm('Borrar código '+c+'?'))return;await p('/api/codigos/delete',{codigo:c});cargarCodigos();}
+let codigos=[];
+async function cargarCodigos(){codigos=await g('/api/codigos');
+  document.getElementById('cod').innerHTML=codigos.map(x=>`<tr><td>${x.codigo}</td><td>${x.tipo}</td><td>${x.cap_code||''}</td><td>${x.baudios}</td><td>${x.descripcion||''}</td><td>${x.activo?'✅':'⬛'}</td><td class="act"><button class="btn-edit" onclick="editar('${x.codigo}')">Editar</button><button class="btn-del" onclick="borrar('${x.codigo}')">Borrar</button></td></tr>`).join('');
+  const s=document.getElementById('e_cod');s.innerHTML=codigos.map(x=>`<option value="${x.codigo}">${x.codigo} — ${x.descripcion||x.tipo}</option>`).join('');}
+async function cargarBitacora(){const b=await g('/api/bitacora');
+  document.getElementById('bit').innerHTML=b.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join('');}
 (async()=>{try{const h=await g('/api/health');document.getElementById('h').textContent=h.status==='ok'?'en línea':'caído';}catch(e){document.getElementById('h').textContent='caído';}
-const c=await g('/api/codigos');document.getElementById('cod').innerHTML=c.map(x=>`<tr><td>${x.codigo}</td><td>${x.tipo}</td><td>${x.cap_code||''}</td><td>${x.baudios}</td><td>${x.descripcion||''}</td></tr>`).join('');
-const b=await g('/api/bitacora');document.getElementById('bit').innerHTML=b.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join('');})();
+cargarCodigos();cargarBitacora();})();
 </script></body></html>
 EOF
 
