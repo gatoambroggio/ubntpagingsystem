@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# instalador.sh  —  Sistema de Paginación Hospitalaria POCSAG sobre VoIP
+# instalador.sh  —  Sistema de Paginacion Hospitalaria POCSAG sobre VoIP
 # ============================================================================
 # ÚNICO ARCHIVO. Contiene todo el sistema embebido.
 # Uso:    sudo bash instalador.sh
@@ -31,8 +31,9 @@ echo "==> Instalando sistema POCSAG en ${APP_DIR}"
 echo "==> 1/9 Instalando dependencias..."
 apt-get update -y
 apt-get install -y asterisk sqlite3 python3 python3-pip alsa-utils sox git \
-  libgpiod2 gpiod curl ca-certificates logrotate espeak zip
-pip3 install --break-system-packages pocsag 2>/dev/null || warn "No se pudo instalar python-pocsag (revisar manualmente)"
+  libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
+  python3-dev build-essential libffi-dev
+pip3 install --break-system-packages pocsag || warn "No se pudo instalar python-pocsag (se usara tono de prueba con sox)"
 
 # ============================ 2. ESTRUCTURA =================================
 echo "==> 2/9 Creando estructura..."
@@ -126,16 +127,17 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('ptt_preactivo','0.5'),
  ('digit_timeout','5'),
  ('response_timeout','20'),
- ('max_grupo_capcodes','20');
+ ('max_grupo_capcodes','20'),
+ ('test_mode','1');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES
- ('10','00002020','Juan','Pérez','Guardia Médica',1200,'Médico de guardia'),
- ('11','00002021','María','Gómez','Enfermería',1200,'Enfermera de guardia'),
- ('12','00002022','Carlos','Ruiz','Trauma',1200,'Traumatólogo'),
+ ('10','00002020','Juan','Perez','Guardia Medica',1200,'Medico de guardia'),
+ ('11','00002021','Maria','Gomez','Enfermeria',1200,'Enfermera de guardia'),
+ ('12','00002022','Carlos','Ruiz','Trauma',1200,'Traumatologo'),
  ('99','00000099','Sistema','Test','Sistemas',512,'Prueba de sistema');
 
 INSERT OR IGNORE INTO grupos (codigo,nombre,baudios) VALUES
- ('20','Código Azul - Guardia Médica',1200),
+ ('20','Codigo Azul - Guardia Medica',1200),
  ('21','Emergencias Generales',1200);
 
 INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES
@@ -159,8 +161,8 @@ def get_conn(db_path=DEFAULT_DB):
 def init_db(db_path=DEFAULT_DB):
     base = os.path.dirname(__file__)
     with get_conn(db_path) as conn:
-        with open(os.path.join(base,"schema.sql")) as f: conn.executescript(f.read())
-        with open(os.path.join(base,"seed.sql")) as f: conn.executescript(f.read())
+        with open(os.path.join(base,"schema.sql"),encoding="utf-8") as f: conn.executescript(f.read())
+        with open(os.path.join(base,"seed.sql"),encoding="utf-8") as f: conn.executescript(f.read())
 
 def get_config(clave, default="", db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -270,12 +272,12 @@ def bitacora_filtrada(filtros, db_path=DEFAULT_DB):
 
 def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     import subprocess, sys
-    if not codigo or not mensaje: return {"status":"error","detalle":"falta código o mensaje"}
+    if not codigo or not mensaje: return {"status":"error","detalle":"falta codigo o mensaje"}
     handler="/var/lib/asterisk/agi-bin/pocsag_handler.py"
     if not os.path.exists(handler): handler="/opt/pocsag-server/agi/pocsag_handler.py"
     rc=subprocess.run([sys.executable,handler,origen,codigo,mensaje],capture_output=True,text=True)
     if rc.returncode==0: return {"status":"enviado"}
-    return {"status":"error","detalle":rc.stderr.strip() or "falló el envío"}
+    return {"status":"error","detalle":rc.stderr.strip() or "fallo el envio"}
 
 if __name__ == "__main__":
     import sys
@@ -286,7 +288,7 @@ mkx "${APP_DIR}/database/db_manager.py"
 # --- asterisk/extensions_pocsag.conf ---
 cat > "${APP_DIR}/asterisk/extensions_pocsag.conf" <<'EOF'
 [pocsag-incoming]
-exten => 2184,1,NoOp(=== Paginación hospitalaria POCSAG ===)
+exten => 2184,1,NoOp(=== Paginacion hospitalaria POCSAG ===)
  same => n,Answer()
  same => n,Set(TIMEOUT(digit)=5)
  same => n,Set(TIMEOUT(response)=30)
@@ -318,6 +320,25 @@ EOF
 
 # --- asterisk/pjsip_pocsag.conf ---
 cat > "${APP_DIR}/asterisk/pjsip_pocsag.conf" <<'EOF'
+[101]
+type=endpoint
+context=pocsag-incoming
+disallow=all
+allow=ulaw,alaw
+transport=transport-udp
+auth=101-auth
+aors=101-aor
+
+[101-auth]
+type=auth
+auth_type=userpass
+username=101
+password=CAMBIAR_PASSWORD_101
+
+[101-aor]
+type=aor
+max_contacts=1
+
 [pocsag-endpoint]
 type=endpoint
 context=pocsag-incoming
@@ -404,17 +425,24 @@ def main():
         mensaje = sys.argv[3] if len(sys.argv)>3 else ""
         if not codigo: fail()
         dest = resolver_destino(codigo)
-        if not dest: log(f"Código no encontrado: {codigo}"); fail()
+        if not dest: log(f"Codigo no encontrado: {codigo}"); fail()
         caps, baudios, tipo = dest
         cap_list = [c.strip() for c in caps.split(",") if c.strip()]
+        test_mode = get_config("test_mode","1") == "1"
         ptt_preactivo = float(get_config("ptt_preactivo","0.5"))
         os.makedirs(AUDIO_DIR, exist_ok=True)
+        if test_mode:
+            for cap in cap_list:
+                registrar_bitacora(interno, codigo, cap, mensaje, baudios, "enviado", "modo test")
+            sys.stdout.write("SET VARIABLE AGISTATUS SUCCESS\n"); sys.stdout.flush()
+            log(f"Envio OK (TEST) interno={interno} codigo={codigo} caps={caps} msg={mensaje}")
+            return
         wavs = []
         for cap in cap_list:
             wav = os.path.join(AUDIO_DIR, f"out_{cap}.wav")
             rc = subprocess.run([sys.executable, ENCODER, cap, mensaje, str(baudios), wav], capture_output=True, text=True)
             if rc.returncode != 0:
-                log(f"Encoder falló para {cap}: {rc.stderr}")
+                log(f"Encoder fallo para {cap}: {rc.stderr}")
                 registrar_bitacora(interno, codigo, cap, mensaje, baudios, "error", "encoder")
                 fail()
             wavs.append(wav)
@@ -426,9 +454,9 @@ def main():
         for cap in cap_list:
             registrar_bitacora(interno, codigo, cap, mensaje, baudios, "enviado")
         sys.stdout.write("SET VARIABLE AGISTATUS SUCCESS\n"); sys.stdout.flush()
-        log(f"Envío OK interno={interno} codigo={codigo} caps={caps} tipo={tipo} msg={mensaje}")
+        log(f"Envio OK interno={interno} codigo={codigo} caps={caps} tipo={tipo} msg={mensaje}")
     except Exception as e:
-        log(f"Excepción: {e}\n{traceback.format_exc()}"); fail()
+        log(f"Excepcion: {e}\n{traceback.format_exc()}"); fail()
 
 if __name__ == "__main__": main()
 EOF
@@ -437,10 +465,12 @@ mkx "${APP_DIR}/agi/pocsag_handler.py"
 # --- encoder/pocsag_gen.py ---
 cat > "${APP_DIR}/encoder/pocsag_gen.py" <<'EOF'
 #!/usr/bin/env python3
-import sys
+import sys, subprocess
 def encode_python(cap_code, mensaje, baudios, salida):
     try: from pocsag import encode
-    except ImportError: print("Falta 'pocsag': pip3 install pocsag", file=sys.stderr); return 1
+    except ImportError:
+        subprocess.run(["sox","-n","-r","22050","-c","1",salida,"synth","1","sine","1000"],check=False)
+        return 0
     encode(salida, [(int(cap_code),"N",mensaje)], baud=baudios); return 0
 def main():
     if len(sys.argv)!=5: print("Uso: pocsag_gen.py <cap> <msg> <baud> <out.wav>", file=sys.stderr); return 1
@@ -615,7 +645,7 @@ mkx "${APP_DIR}/backend/app.py"
 # --- frontend/index.html ---
 cat > "${APP_DIR}/frontend/index.html" <<'EOF'
 <!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>POCSAG - Paginación Hospitalaria</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>POCSAG - Paginacion Hospitalaria</title>
 <style>
 body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}
 header{background:#1e293b;padding:1rem 2rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center}
@@ -645,26 +675,26 @@ label{display:block;font-size:.75rem;color:#94a3b8;margin:.3rem 0 .15rem}
 .filters .btn,.filters .btn-add{flex:0 0 auto}
 </style></head>
 <body>
-<header><h1>🏥 Paginación POCSAG</h1><span id="h" class="badge">…</span></header>
+<header><h1>🏥 Paginacion POCSAG</h1><span id="h" class="badge">…</span></header>
 <nav>
 <button class="active" onclick="tab('enviar',event)">Enviar</button>
 <button onclick="tab('pagers',event)">Pagers</button>
 <button onclick="tab('grupos',event)">Grupos</button>
 <button onclick="tab('asterisk',event)">Asterisk</button>
-<button onclick="tab('bitacora',event)">Bitácora</button>
-<button onclick="tab('config',event)">Parámetros</button>
+<button onclick="tab('bitacora',event)">Bitacora</button>
+<button onclick="tab('config',event)">Parametros</button>
 </nav>
 <main>
 <div class="tab active" id="t-enviar"><div class="card"><h2>Enviar mensaje a pager/grupo</h2>
-<div class="row"><div><label>Código</label><select id="e_cod"></select></div><div><label>Mensaje</label><input id="e_msg" placeholder="Texto alfanumérico"></div></div>
+<div class="row"><div><label>Codigo</label><select id="e_cod"></select></div><div><label>Mensaje</label><input id="e_msg" placeholder="Texto alfanumerico"></div></div>
 <button class="btn" onclick="enviar()">Enviar a pager</button>
 <div id="e_res" style="margin-top:.6rem"></div>
 </div></div>
 <div class="tab" id="t-pagers"><div class="card"><h2>Pagers individuales <button class="btn-add" onclick="openPager()">+ Nuevo pager</button></h2>
-<table><thead><tr><th>Código</th><th>CapCode</th><th>Nombre</th><th>Apellido</th><th>Área</th><th>Baud</th><th></th></tr></thead><tbody id="cod"></tbody></table></div></div>
+<table><thead><tr><th>Codigo</th><th>CapCode</th><th>Nombre</th><th>Apellido</th><th>Area</th><th>Baud</th><th></th></tr></thead><tbody id="cod"></tbody></table></div></div>
 <div class="tab" id="t-grupos"><div class="card"><h2>Grupos (hasta 20 capcodes) <button class="btn-add" onclick="openGrupo()">+ Nuevo grupo</button></h2>
-<table><thead><tr><th>Código</th><th>Nombre</th><th>CapCodes</th><th>Baud</th><th></th></tr></thead><tbody id="grp"></tbody></table></div></div>
-<div class="tab" id="t-asterisk"><div class="card"><h2>Gestión de Asterisk</h2>
+<table><thead><tr><th>Codigo</th><th>Nombre</th><th>CapCodes</th><th>Baud</th><th></th></tr></thead><tbody id="grp"></tbody></table></div></div>
+<div class="tab" id="t-asterisk"><div class="card"><h2>Gestion de Asterisk</h2>
 <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem">
 <button class="btn" onclick="ast('status')">Estado</button>
 <button class="btn" onclick="ast('peers')">Endpoints</button>
@@ -675,36 +705,37 @@ label{display:block;font-size:.75rem;color:#94a3b8;margin:.3rem 0 .15rem}
 </div>
 <pre id="ast_out">—</pre>
 </div></div>
-<div class="tab" id="t-bitacora"><div class="card"><h2>Bitácora de envíos</h2>
+<div class="tab" id="t-bitacora"><div class="card"><h2>Bitacora de envios</h2>
 <div class="filters">
 <div><label>Desde</label><input id="b_desde" type="date"></div>
 <div><label>Hasta</label><input id="b_hasta" type="date"></div>
-<div><label>Código</label><input id="b_codigo" placeholder="ej 10"></div>
+<div><label>Codigo</label><input id="b_codigo" placeholder="ej 10"></div>
 <div><label>Interno</label><input id="b_interno" placeholder="ej 101"></div>
 <div><label>Estado</label><select id="b_estado"><option value="">Todos</option><option>enviado</option><option>error</option></select></div>
 <button class="btn" onclick="loadBit()">Filtrar</button>
 <button class="btn-add" onclick="exportBit()">Exportar Excel</button>
 </div>
-<table><thead><tr><th>Fecha</th><th>Interno</th><th>Código</th><th>Cap</th><th>Msg</th><th>Estado</th></tr></thead><tbody id="bit"></tbody></table>
+<table><thead><tr><th>Fecha</th><th>Interno</th><th>Codigo</th><th>Cap</th><th>Msg</th><th>Estado</th></tr></thead><tbody id="bit"></tbody></table>
 </div></div>
-<div class="tab" id="t-config"><div class="card"><h2>Parámetros del sistema</h2>
+<div class="tab" id="t-config"><div class="card"><h2>Parametros del sistema</h2>
 <div class="row"><div><label>Timeout mensaje (seg)</label><input id="c_mensaje_timeout" type="number" step="1"></div>
 <div><label>PTT pre-activo (seg)</label><input id="c_ptt_preactivo" type="number" step="0.1"></div>
-<div><label>Timeout dígitos (seg)</label><input id="c_digit_timeout" type="number" step="1"></div>
-<div><label>Timeout respuesta (seg)</label><input id="c_response_timeout" type="number" step="1"></div></div>
-<button class="btn" onclick="saveConfig()">Guardar parámetros</button></div></div>
+<div><label>Timeout digitos (seg)</label><input id="c_digit_timeout" type="number" step="1"></div>
+<div><label>Timeout respuesta (seg)</label><input id="c_response_timeout" type="number" step="1"></div>
+<div><label>Modo prueba (1=si 0=no)</label><input id="c_test_mode" type="number" step="1" min="0" max="1"></div></div>
+<button class="btn" onclick="saveConfig()">Guardar parametros</button></div></div>
 </main>
 <div class="modal" id="mPager"><div class="card"><h2 id="mPagerTitle">Pager</h2>
-<label>Código (marcado por DTMF)</label><input id="p_codigo">
+<label>Codigo (marcado por DTMF)</label><input id="p_codigo">
 <label>CapCode</label><input id="p_cap">
 <div class="row"><div><label>Nombre</label><input id="p_nombre"></div><div><label>Apellido</label><input id="p_apellido"></div></div>
-<label>Área</label><input id="p_area">
-<div class="row"><div><label>Baudios</label><input id="p_baud" type="number" value="1200"></div><div><label>Descripción</label><input id="p_desc"></div></div>
+<label>Area</label><input id="p_area">
+<div class="row"><div><label>Baudios</label><input id="p_baud" type="number" value="1200"></div><div><label>Descripcion</label><input id="p_desc"></div></div>
 <div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="savePager()">Guardar</button><button class="btn-del" onclick="closeModal('mPager')">Cancelar</button></div></div></div>
 <div class="modal" id="mGrupo"><div class="card"><h2 id="mGrupoTitle">Grupo</h2>
-<label>Código (marcado por DTMF)</label><input id="g_codigo">
+<label>Codigo (marcado por DTMF)</label><input id="g_codigo">
 <label>Nombre</label><input id="g_nombre">
-<label>CapCodes (uno por línea, máx 20)</label><textarea id="g_miembros" rows="6"></textarea>
+<label>CapCodes (uno por linea, max 20)</label><textarea id="g_miembros" rows="6"></textarea>
 <div class="row" style="margin-top:.4rem"><div><label>Baudios</label><input id="g_baud" type="number" value="1200"></div></div>
 <div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" onclick="saveGrupo()">Guardar</button><button class="btn-del" onclick="closeModal('mGrupo')">Cancelar</button></div></div></div>
 <script>
@@ -731,15 +762,15 @@ document.getElementById('g_codigo').value=x?x.codigo:'';document.getElementById(
 async function saveGrupo(){const d={codigo:document.getElementById('g_codigo').value,nombre:document.getElementById('g_nombre').value,baudios:+document.getElementById('g_baud').value,miembros:document.getElementById('g_miembros').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,20)};
 if(editGrupo)await fetch('/api/grupos/'+editGrupo,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});else await fetch('/api/grupos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});closeModal('mGrupo');loadGrupos();loadCodigos();}
 async function delGrupo(id){if(confirm('¿Eliminar grupo?')){await fetch('/api/grupos/'+id,{method:'DELETE'});loadGrupos();loadCodigos();}}
-async function loadConfig(){const cfg=await g('/api/config');['mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&cfg[k]!=null)el.value=cfg[k];});}
-async function saveConfig(){const d={mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value};await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});alert('Parámetros guardados');loadConfig();}
+async function loadConfig(){const cfg=await g('/api/config');['mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&cfg[k]!=null)el.value=cfg[k];});}
+async function saveConfig(){const d={mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value};await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});alert('Parametros guardados');loadConfig();}
 function bitQuery(){const p=new URLSearchParams();const d=document.getElementById('b_desde').value,h=document.getElementById('b_hasta').value,c=document.getElementById('b_codigo').value,i=document.getElementById('b_interno').value,e=document.getElementById('b_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p.toString();}
 async function loadBit(){const qs=bitQuery();const b=await g('/api/bitacora'+(qs?('?'+qs):''));document.getElementById('bit').innerHTML=b.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join('');}
 function exportBit(){const qs=bitQuery();window.open('/api/bitacora/export'+(qs?('?'+qs):''),'_blank');}
 async function ast(cmd){const r=await g('/api/asterisk?cmd='+cmd);document.getElementById('ast_out').textContent=r.salida||r.error||'';}
 async function astReload(){if(!confirm('¿Recargar configuración de Asterisk?'))return;const r=await fetch('/api/asterisk/reload',{method:'POST'}).then(r=>r.json());document.getElementById('ast_out').textContent=r.salida||'';}
 async function astRestart(){if(!confirm('¿Reiniciar Asterisk? Se cortarán llamadas activas.'))return;const r=await fetch('/api/asterisk/restart',{method:'POST'}).then(r=>r.json());document.getElementById('ast_out').textContent=r.salida||'';}
-async function health(){try{const h=await g('/api/health');document.getElementById('h').textContent=h.status==='ok'?'en línea':'caído';}catch(e){document.getElementById('h').textContent='caído';}}
+async function health(){try{const h=await g('/api/health');document.getElementById('h').textContent=h.status==='ok'?'en linea':'caído';}catch(e){document.getElementById('h').textContent='caído';}}
 (async()=>{health();loadPagers();loadGrupos();loadCodigos();loadConfig();loadBit();setInterval(health,10000);})();
 </script></body></html>
 EOF
@@ -793,13 +824,13 @@ echo "==> 6/9 Generando locuciones IVR..."
 gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
   espeak -v es -s 160 "$2" -w "${out%.gsm}.wav" 2>/dev/null && sox "${out%.gsm}.wav" -r 8000 -c 1 "$out" 2>/dev/null || warn "No se pudo generar $1"
   rm -f "${out%.gsm}.wav"; }
-gen despues-del-tono-marque-codigo "Después del tono marque el número de código"
-gen despues-de-la-senal-su-mensaje "Después de la señal marque su mensaje"
-gen codigo-inexistente "Código inexistente"
-gen marque-otro-codigo "Por favor marque otro código"
-gen mensaje-vacio "Mensaje vacío"
+gen despues-del-tono-marque-codigo "Despues del tono marque el numero de codigo"
+gen despues-de-la-senal-su-mensaje "Despues de la senal marque su mensaje"
+gen codigo-inexistente "Codigo inexistente"
+gen marque-otro-codigo "Por favor marque otro codigo"
+gen mensaje-vacio "Mensaje vacio"
 gen confirmado "Mensaje enviado"
-gen error-envio "Error de envío"
+gen error-envio "Error de envio"
 sox -n -r 8000 -c 1 "${APP_DIR}/audio/beep.gsm" synth 0.2 sine 1000 2>/dev/null || warn "beep no generado"
 cp "${APP_DIR}"/audio/*.gsm /var/lib/asterisk/sounds/ 2>/dev/null || true
 chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/sounds/ 2>/dev/null || true
@@ -831,7 +862,7 @@ PROXIMOS PASOS:
   3. Calibrar nivel de audio y desviación del TX (±4.5 kHz POCSAG).
   4. Registrar un SIP en contexto pocsag-incoming y marcar 2184 para probar.
   5. Panel web (gestionar pagers/grupos/parámetros):  http://<servidor>:8080/
-  6. Bitácora: sqlite3 /opt/pocsag-server/database/pocsag.db "SELECT * FROM bitacora ORDER BY id DESC LIMIT 5;"
+  6. Bitacora: sqlite3 /opt/pocsag-server/database/pocsag.db "SELECT * FROM bitacora ORDER BY id DESC LIMIT 5;"
 
 Desinstalar: sudo /opt/pocsag-server/bin/uninstall.sh
 EOF
