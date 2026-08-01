@@ -827,6 +827,19 @@ exit $((1-ok))
 EOF
 mkx "${APP_DIR}/scripts/healthcheck.sh"
 
+# --- scripts/limpiar_audio.sh ---
+cat > "${APP_DIR}/scripts/limpiar_audio.sh" <<'EOF'
+#!/usr/bin/env bash
+# Elimina los WAV generados por el sistema (out_*.wav) con mas de N dias.
+# NO toca las locuciones .gsm del IVR ni la base de datos.
+set -euo pipefail
+AUDIO_DIR="/opt/pocsag-server/audio"
+DIAS="${1:-7}"
+[[ -d "$AUDIO_DIR" ]] || exit 0
+find "$AUDIO_DIR" -name 'out_*.wav' -type f -mtime +"${DIAS}" -delete 2>/dev/null || true
+EOF
+mkx "${APP_DIR}/scripts/limpiar_audio.sh"
+
 # --- services/pocsag-api.service ---
 cat > "${APP_DIR}/services/pocsag-api.service" <<'EOF'
 [Unit]
@@ -1502,6 +1515,12 @@ cp "${APP_DIR}/services/"*.service /etc/systemd/system/
 cat > /etc/logrotate.d/pocsag <<EOF
 ${APP_DIR}/logs/*.log { daily rotate 14 compress missingok notifempty }
 EOF
+cat > /etc/cron.d/pocsag-cleanup <<'EOF'
+# Limpieza diaria de WAV generados (out_*.wav) con mas de 7 dias.
+# Las locuciones .gsm del IVR no se tocan.
+0 3 * * * root /opt/pocsag-server/scripts/limpiar_audio.sh 7 >/dev/null 2>&1
+EOF
+chmod 644 /etc/cron.d/pocsag-cleanup
 systemctl daemon-reload
 if [[ "$FREEPBX" == "1" ]]; then
   systemctl disable --now asterisk 2>/dev/null || true
