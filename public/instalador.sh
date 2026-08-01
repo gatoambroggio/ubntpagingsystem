@@ -13,7 +13,7 @@ AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
 UPDATE=0
 RESET=0
-VERSION="1.02"
+VERSION="1.03"
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 [[ "${1:-}" == "--reset" ]] && RESET=1
 
@@ -78,6 +78,9 @@ echo "==> 3/10 (omitido - solo Asterisk nativo)"
 echo "==> 4/10 Estructura..."
 mkdir -p "${APP_DIR}"/{asterisk,agi,encoder,database,services,scripts,config,backend,frontend,docs,tests,audio,logs,bin}
 touch "${APP_DIR}/logs/"{pocsag,cola,backup,health,scheduler,smtp}.log 2>/dev/null || true
+export TZ="America/Argentina/Cordoba"; timedatectl set-timezone "America/Argentina/Cordoba" 2>/dev/null || ln -sf /usr/share/zoneinfo/America/Argentina/Cordoba /etc/localtime 2>/dev/null || true
+echo "America/Argentina/Cordoba" > /etc/timezone 2>/dev/null || true
+echo "==> Zona horaria: $(date '+%Z %H:%M:%S')"
 
 # ============================ 5. ARCHIVOS ==================================
 mkx() { chmod +x "$1"; }
@@ -278,7 +281,7 @@ EOF
 # --- database/db_manager.py ---
 cat > "${APP_DIR}/database/db_manager.py" <<'EOF'
 #!/usr/bin/env python3
-import sqlite3, os, secrets, time
+import sqlite3, os, secrets, time, datetime
 from contextlib import contextmanager
 DEFAULT_DB = "/opt/pocsag-server/database/pocsag.db"
 _TOKENS = {}  # token -> epoch de expiracion
@@ -325,8 +328,8 @@ def resolver_destino(codigo, db_path=DEFAULT_DB):
 
 def registrar_bitacora(interno, codigo, cap_code, mensaje, baudios, estado, obs="", db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
-        conn.execute("INSERT INTO bitacora (interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones) VALUES (?,?,?,?,?,?,?)",
-                     (interno,codigo,cap_code,mensaje,baudios,estado,obs))
+        conn.execute("INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones) VALUES (?,?,?,?,?,?,?,?)",
+                     (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),interno,codigo,cap_code,mensaje,baudios,estado,obs))
 
 def listar_pagers(db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -1314,6 +1317,7 @@ ExecStart=/usr/bin/python3 /opt/pocsag-server/backend/app.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Argentina/Cordoba
 
 [Install]
 WantedBy=multi-user.target
@@ -1347,6 +1351,7 @@ ExecStart=/usr/bin/python3 /opt/pocsag-server/agi/cola_worker.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Argentina/Cordoba
 
 [Install]
 WantedBy=multi-user.target
@@ -1364,6 +1369,7 @@ ExecStart=/usr/bin/python3 /opt/pocsag-server/agi/scheduler_worker.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Argentina/Cordoba
 
 [Install]
 WantedBy=multi-user.target
@@ -1810,7 +1816,7 @@ tbody tr:hover{background:rgba(20,184,166,.05)}
 <div class="topbar">
   <div class="brand"><div class="logo">🧭</div><div>POCSAG<small>paginacion hospitalaria</small></div></div>
   <span id="h" class="pill"><span class="dot"></span> en linea</span>
-  <span id="ver" class="badge mut" style="margin-left:auto">v1.02</span>
+  <span id="ver" class="badge mut" style="margin-left:auto">v1.03</span>
 </div>
 <div class="tabs">
   <button class="active" onclick="tab('enviar',this)">📨 Enviar mensaje</button>
@@ -2043,7 +2049,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
   <div class="content">
-    <div class="topbar"><h1 id="tit">Pagers</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.02</span></div>
+    <div class="topbar"><h1 id="tit">Pagers</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.03</span></div>
     <div class="tab" id="t-enviar"><div class="card"><h2>📨 Enviar mensaje</h2>
       <div class="field"><label>Buscar destinatario (nombre, codigo o area)</label>
       <div style="position:relative"><input id="s_q" autocomplete="off" placeholder="Escriba para buscar..."><ul id="s_list" style="position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:var(--panel2);border:1px solid var(--line);border-radius:10px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none"></ul></div></div>
@@ -2288,7 +2294,7 @@ let curLogType='api';async function loadLogs(tipo){curLogType=tipo;const r=await
 // Auditoria
 async function loadAud(){const r=await api('GET','/api/auditoria?limit=200');document.getElementById('tb_aud').innerHTML=(r.rows||[]).map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.usuario||''}</td><td>${x.accion||''}</td><td>${x.entidad||''}</td><td>${x.entidad_id||''}</td><td>${(x.detalle||'').slice(0,50)}</td><td>${x.ip||''}</td></tr>`).join('')||`<tr><td colspan="7" style="color:var(--mut);text-align:center;padding:1rem">Sin registros de auditoria</td></tr>`;}
 checkTok();applyTheme();health();setInterval(health,20000);loadVersion();
-const CHANGELOG=[['1.02','Programacion multiple de backups con listado y eliminacion desde el admin. Correccion SMTP: auto-SSL en puerto 465 (evita timeout con TLS en 465).'],['1.01','Programacion de backups (diario/semanal/mensual) desde el panel, con envio por email opcional. Soporte importar .xls. Logs de cola/scheduler/backup. Instalador Raspberry Pi.'],['1.0','Version inicial: panel publico y admin, cola de envios, envios programados, plantillas, dashboard, visor de logs, auditoria, modulo de diseno, gestion PBX, backups por email y sistema de versiones.']];
+const CHANGELOG=[['1.03','Fecha y hora de la bitacora y auditoria en hora local del servidor (America/Argentina/Cordoba). Configuracion automatica de zona horaria en el instalador y TZ en los servicios.'],['1.02','Programacion multiple de backups con listado y eliminacion desde el admin. Correccion SMTP: auto-SSL en puerto 465 (evita timeout con TLS en 465).'],['1.01','Programacion de backups (diario/semanal/mensual) desde el panel, con envio por email opcional. Soporte importar .xls. Logs de cola/scheduler/backup. Instalador Raspberry Pi.'],['1.0','Version inicial: panel publico y admin, cola de envios, envios programados, plantillas, dashboard, visor de logs, auditoria, modulo de diseno, gestion PBX, backups por email y sistema de versiones.']];
 function loadChangelog(){const el=document.getElementById('changelog');if(el)el.innerHTML=CHANGELOG.map(([v,t])=>`<div style="margin-bottom:.6rem"><b style="color:var(--acc)">v${v}</b><br>${t}</div>`).join('');}
 async function loadVersion(){try{const v=await fetch('/api/version').then(r=>r.json());const el=document.getElementById('ver');if(el)el.textContent='v'+(v.version||'1.0');}catch(e){}}
 </script>
