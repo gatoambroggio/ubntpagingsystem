@@ -25,6 +25,7 @@ import JSZip from "jszip";
 
 const REPO = "https://github.com/gatoambroggio/ubntpagingsystem.git";
 const RAW = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador.sh";
+const RAW_RPI = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_rpi.sh";
 
 const BOOTSTRAP = `#!/usr/bin/env bash
 # Instala el sistema POCSAG clonando el repositorio desde GitHub.
@@ -397,6 +398,32 @@ export default function Descarga() {
           />
           <p className="text-[11px] text-slate-400 mt-2">
             Despues abri el panel en incognito (Ctrl+Shift+N) para saltear la cache.
+          </p>
+        </motion.div>
+
+        {/* raspberry pi */}
+        <motion.div
+          custom={4}
+          variants={fade}
+          initial="hidden"
+          animate="show"
+          className="md:col-span-3 rounded-[28px] bg-gradient-to-br from-emerald-500/15 to-green-500/15 border border-emerald-500/30 p-6 flex flex-col"
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Cpu className="w-5 h-5 text-emerald-600" />
+            <h2 className="font-display font-bold text-slate-900">Instalar en Raspberry Pi</h2>
+          </div>
+          <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+            Para Pi 3/4/5 con Raspberry Pi OS (64-bit). Detecta el gpiochip automaticamente
+            (Pi 5 usa gpiochip4, Pi 3/4 gpiochip0) y configura el PTT en el BCM 17 por defecto.
+          </p>
+          <CmdBlock
+            id="rpi"
+            text={`curl -fsSL ${RAW_RPI} | sudo bash`}
+            label="raspberry pi"
+          />
+          <p className="text-[11px] text-slate-400 mt-2">
+            Para otro pin: <code className="font-mono text-emerald-600">sudo POCSAG_GPIO_PIN=18 bash instalador_rpi.sh</code>
           </p>
         </motion.div>
       </section>

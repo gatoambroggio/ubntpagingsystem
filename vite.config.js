@@ -19,6 +19,8 @@ function rawTextFallback() {
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
         const inst = path.resolve(root, 'instalador.sh')
         if (fs.existsSync(inst)) fs.copyFileSync(inst, path.resolve(destDir, 'instalador.sh'))
+        const instrpi = path.resolve(root, 'instalador_rpi.sh')
+        if (fs.existsSync(instrpi)) fs.copyFileSync(instrpi, path.resolve(destDir, 'instalador_rpi.sh'))
         const srcRoot = path.resolve(root, 'src')
         const destSrc = path.resolve(destDir, 'source', 'src')
         try { fs.rmSync(path.resolve(destDir, 'source'), { recursive: true, force: true }) } catch {}
@@ -50,6 +52,14 @@ function rawTextFallback() {
         if (u === '/instalador.sh') {
           try {
             const c = fs.readFileSync(path.resolve(root, 'instalador.sh'));
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end(c);
+            return;
+          } catch (e) {}
+        }
+        if (u === '/instalador_rpi.sh') {
+          try {
+            const c = fs.readFileSync(path.resolve(root, 'instalador_rpi.sh'));
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.end(c);
             return;

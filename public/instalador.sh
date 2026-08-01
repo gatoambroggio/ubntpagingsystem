@@ -55,7 +55,7 @@ if [[ $UPDATE -eq 0 ]]; then
   apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git \
     libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
     python3-dev build-essential libffi-dev wget
-  pip3 install --break-system-packages openpyxl 2>&1 || python3 -m pip install --break-system-packages openpyxl 2>&1 || warn "openpyxl no instalado (importacion Excel solo admitira CSV)"
+  pip3 install --break-system-packages openpyxl xlrd 2>&1 || python3 -m pip install --break-system-packages openpyxl xlrd 2>&1 || warn "openpyxl/xlrd no instalados (importacion Excel solo admitira CSV)"
 else
   echo "==> 1/10 Dependencias base (omitidas en --update)"
 fi
@@ -77,6 +77,7 @@ echo "==> 3/10 (omitido - solo Asterisk nativo)"
 # ============================ 4. ESTRUCTURA =================================
 echo "==> 4/10 Estructura..."
 mkdir -p "${APP_DIR}"/{asterisk,agi,encoder,database,services,scripts,config,backend,frontend,docs,tests,audio,logs,bin}
+touch "${APP_DIR}/logs/"{pocsag,cola,backup,health,scheduler,smtp}.log 2>/dev/null || true
 
 # ============================ 5. ARCHIVOS ==================================
 mkx() { chmod +x "$1"; }
@@ -1030,20 +1031,21 @@ def recuperar_enviando():
     with get_conn(DEFAULT_DB) as conn:
         conn.execute("UPDATE cola_envios SET estado='pendiente' WHERE estado='enviando'")
 
+def clog(m):
+    with open("/opt/pocsag-server/logs/cola.log","a") as f: f.write(time.strftime("%Y-%m-%d %H:%M:%S")+" "+m+"\n")
 def main():
     recuperar_enviando()
     os.makedirs("/opt/pocsag-server/logs", exist_ok=True)
+    clog("[START] Worker de cola iniciado")
     while True:
         try:
             result = procesar_siguiente_cola()
             if result is None:
                 time.sleep(2)
             else:
-                time.sleep(0.5)
+                clog(f"[OK] Procesado item id={result}"); time.sleep(0.5)
         except Exception as e:
-            with open("/opt/pocsag-server/logs/cola.log","a") as f:
-                f.write(f"[ERROR] {e}\n")
-            time.sleep(5)
+            clog(f"[ERROR] {e}"); time.sleep(5)
 
 if __name__ == "__main__": main()
 EOF
@@ -1058,6 +1060,7 @@ from database.db_manager import procesar_programados
 
 def main():
     os.makedirs("/opt/pocsag-server/logs", exist_ok=True)
+    with open("/opt/pocsag-server/logs/scheduler.log","a") as f: f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [START] Scheduler iniciado\n")
     while True:
         try:
             procesados = procesar_programados()
@@ -1232,6 +1235,8 @@ elif command -v gpioset >/dev/null; then gpioset "${CHIP}" "${PIN}=0"
 else echo "[ptt_off] Configurar GPIO o ttyUSB0" >&2; exit 1; fi
 EOF
 mkx "${APP_DIR}/scripts/ptt_off.sh"
+if [[ -n "${POCSAG_GPIO_CHIP:-}" ]]; then sed -i "s/CHIP=\"gpiochip4\"/CHIP=\"${POCSAG_GPIO_CHIP}\"/" "${APP_DIR}/scripts/ptt_on.sh" "${APP_DIR}/scripts/ptt_off.sh"; fi
+if [[ -n "${POCSAG_GPIO_PIN:-}" ]]; then sed -i "s/PIN=\"17\"/PIN=\"${POCSAG_GPIO_PIN}\"/" "${APP_DIR}/scripts/ptt_on.sh" "${APP_DIR}/scripts/ptt_off.sh"; fi
 
 # --- scripts/healthcheck.sh ---
 cat > "${APP_DIR}/scripts/healthcheck.sh" <<'EOF'
@@ -1279,6 +1284,7 @@ DB="/opt/pocsag-server/database/pocsag.db"
 BACKUP_DIR="/opt/pocsag-server/database/backups"
 DIAS="${1:-7}"
 mkdir -p "$BACKUP_DIR"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup automatico iniciado" >> /opt/pocsag-server/logs/backup.log
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP="$BACKUP_DIR/pocsag_backup_${TS}.db"
 cp "$DB" "$BACKUP" 2>/dev/null || exit 0
@@ -1406,24 +1412,37 @@ def ast_run(cmd): return run_cmd(["asterisk","-rx",cmd])
 SAFE_CMDS={"status":"core show status","version":"core show version","peers":"pjsip show endpoints",
            "channels":"core show channels","uptime":"core show uptime","dialplan":"dialplan show"}
 
-def parse_import(body, filename):
+def rows_from_sheet(body, filename):
     name=(filename or "").lower(); rows=[]
     if name.endswith(".csv"):
         for r in csv.DictReader(io.StringIO(body.decode("utf-8-sig",errors="replace"))): rows.append(r)
     elif name.endswith(".xlsx"):
         try: import openpyxl
-        except ImportError: return None,"openpyxl no instalado. Exporte la planilla como CSV."
+        except ImportError: return None,"openpyxl no instalado. Exporte como CSV."
         tf=tempfile.NamedTemporaryFile(suffix=".xlsx",delete=False); tf.write(body); tf.close()
         try:
-            wb=openpyxl.load_workbook(tf.name, read_only=True); ws=wb.active
-            data=list(ws.iter_rows(values_only=True))
+            wb=openpyxl.load_workbook(tf.name, read_only=True); data=list(wb.active.iter_rows(values_only=True))
         finally: os.unlink(tf.name)
         if not data: return [],None
         headers=[str(h or "").strip().lower() for h in data[0]]
-        for row in data[1:]:
-            rows.append(dict(zip(headers,[("" if c is None else str(c)) for c in row])))
+        for row in data[1:]: rows.append(dict(zip(headers,[("" if c is None else str(c)) for c in row])))
+    elif name.endswith(".xls"):
+        try: import xlrd
+        except ImportError: return None,"xlrd no instalado. Exporte como CSV o XLSX."
+        tf=tempfile.NamedTemporaryFile(suffix=".xls",delete=False); tf.write(body); tf.close()
+        try:
+            ws=xlrd.open_workbook(tf.name).sheet_by_index(0); data=[ws.row_values(i) for i in range(ws.nrows)]
+        finally: os.unlink(tf.name)
+        if not data: return [],None
+        headers=[str(h or "").strip().lower() for h in data[0]]
+        for row in data[1:]: rows.append(dict(zip(headers,[("" if c is None else str(c)) for c in row])))
     else:
-        return None,"Formato no soportado. Use .xlsx o .csv"
+        return None,"Formato no soportado. Use .xls, .xlsx o .csv"
+    return rows,None
+
+def parse_import(body, filename):
+    rows,err=rows_from_sheet(body,filename)
+    if err: return None,err
     def pick(r,*keys):
         for k in keys:
             if k in r and str(r[k]).strip()!="": return str(r[k]).strip()
@@ -1438,23 +1457,8 @@ def parse_import(body, filename):
     return norm,None
 
 def parse_import_grupos(body, filename):
-    name=(filename or "").lower(); rows=[]
-    if name.endswith(".csv"):
-        for r in csv.DictReader(io.StringIO(body.decode("utf-8-sig",errors="replace"))): rows.append(r)
-    elif name.endswith(".xlsx"):
-        try: import openpyxl
-        except ImportError: return None,"openpyxl no instalado. Exporte la planilla como CSV."
-        tf=tempfile.NamedTemporaryFile(suffix=".xlsx",delete=False); tf.write(body); tf.close()
-        try:
-            wb=openpyxl.load_workbook(tf.name, read_only=True); ws=wb.active
-            data=list(ws.iter_rows(values_only=True))
-        finally: os.unlink(tf.name)
-        if not data: return [],None
-        headers=[str(h or "").strip().lower() for h in data[0]]
-        for row in data[1:]:
-            rows.append(dict(zip(headers,[("" if c is None else str(c)) for c in row])))
-    else:
-        return None,"Formato no soportado. Use .xlsx o .csv"
+    rows,err=rows_from_sheet(body,filename)
+    if err: return None,err
     def pick(r,*keys):
         for k in keys:
             if k in r and str(r[k]).strip()!="": return str(r[k]).strip()
@@ -2050,13 +2054,13 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="toolbar"><div class="search"><input id="gq" placeholder="Buscar grupo por codigo o nombre..."></div></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Codigo</th><th>Nombre</th><th>CapCodes</th><th>Baud</th><th></th></tr></thead><tbody id="tb_grupos"></tbody></table></div></div></div>
     <div class="tab" id="t-import"><div class="card"><h2>📥 Importar codigos desde Excel</h2>
-      <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, cap_code, nombre, apellido, area, baudios, descripcion. Los codigos existentes se actualizan.</p>
-      <div class="drop" id="drop"><input type="file" id="ifile" accept=".xlsx,.csv" style="display:none"><div id="dftxt">Arrastre el archivo aqui o haga click para seleccionar</div></div>
+      <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xls</b>, <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, cap_code, nombre, apellido, area, baudios, descripcion. Los codigos existentes se actualizan.</p>
+      <div class="drop" id="drop"><input type="file" id="ifile" accept=".xls,.xlsx,.csv" style="display:none"><div id="dftxt">Arrastre el archivo aqui o haga click para seleccionar</div></div>
       <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap"><button class="btn btn-pri" id="impbtn" onclick="doImport()" disabled>Importar</button><a class="btn btn-sec" href="data:text/csv;base64,Y29kaWdvLGNhcF9jb2RlLG5vbWJyZSxhcGVsbGlkbyxhcmVhLGJhdWRpb3MsZGVzY3JpcGNpb24KMTAsMDAwMjAyMCxKdWFuLFBlcmV6LEd1YXJkaWEgTWVkaWNhLDEyMDAsTWVkaWNvIGRlIGd1YXJkaWEK" download="plantilla_pagers.csv">Descargar plantilla</a></div>
       <div id="imp_res" class="toast"></div></div>
       <div class="card"><h2>📥 Importar grupos desde Excel</h2>
-      <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, nombre, baudios, cap_codes (capcodes separados por coma). Los grupos existentes se actualizan.</p>
-      <div class="drop" id="dropG"><input type="file" id="ifileG" accept=".xlsx,.csv" style="display:none"><div id="dftxtG">Arrastre el archivo aqui o haga click para seleccionar</div></div>
+      <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xls</b>, <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, nombre, baudios, cap_codes (capcodes separados por coma). Los grupos existentes se actualizan.</p>
+      <div class="drop" id="dropG"><input type="file" id="ifileG" accept=".xls,.xlsx,.csv" style="display:none"><div id="dftxtG">Arrastre el archivo aqui o haga click para seleccionar</div></div>
       <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap"><button class="btn btn-pri" id="impbtnG" onclick="doImportGrupos()" disabled>Importar grupos</button></div>
       <div id="impG_res" class="toast"></div></div></div>
     <div class="tab" id="t-ext"><div class="card"><h2><span>☎ Extensiones Asterisk</span><button class="btn btn-pri btn-sm" onclick="openExt()">+ Nueva extension</button></h2>
