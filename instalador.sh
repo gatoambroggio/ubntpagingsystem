@@ -314,6 +314,27 @@ def importar_pagers(rows, db_path=DEFAULT_DB):
             except Exception: errores+=1
     return {"importados":n,"errores":errores}
 
+def importar_grupos(rows, db_path=DEFAULT_DB):
+    n=0; errores=0
+    with get_conn(db_path) as conn:
+        for r in rows:
+            try: baud=int(r.get("baudios") or 1200)
+            except (ValueError,TypeError): baud=1200
+            caps=[c.strip() for c in str(r.get("cap_codes","")).split(",") if c.strip()][:20]
+            codigo=r.get("codigo","")
+            if not codigo or not caps: continue
+            try:
+                conn.execute("INSERT INTO grupos (codigo,nombre,baudios,activo) VALUES (?,?,?,1) "
+                    "ON CONFLICT(codigo) DO UPDATE SET nombre=excluded.nombre,baudios=excluded.baudios",
+                    (codigo,r.get("nombre",""),baud))
+                gid=conn.execute("SELECT id FROM grupos WHERE codigo=?",(codigo,)).fetchone()["id"]
+                conn.execute("DELETE FROM grupo_miembros WHERE grupo_id=?",(gid,))
+                for i,c in enumerate(caps):
+                    conn.execute("INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES (?,?,?)",(gid,c,i))
+                n+=1
+            except Exception: errores+=1
+    return {"importados":n,"errores":errores}
+
 def listar_extensiones(db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM extensiones ORDER BY numero")]
@@ -442,6 +463,8 @@ def bitacora_filtrada(filtros, db_path=DEFAULT_DB):
 def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     import subprocess, sys
     if not codigo or not mensaje: return {"status":"error","detalle":"falta codigo o mensaje"}
+    dest = resolver_destino(codigo, db_path)
+    if not dest: return {"status":"error","detalle":"codigo inactivo o inexistente"}
     handler="/var/lib/asterisk/agi-bin/pocsag_handler.py"
     if not os.path.exists(handler): handler="/opt/pocsag-server/agi/pocsag_handler.py"
     rc=subprocess.run([sys.executable,handler,origen,codigo,mensaje],capture_output=True,text=True)
@@ -854,7 +877,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 sys.path.insert(0, "/opt/pocsag-server")
 from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actualizar_pager, borrar_pager,
-    toggle_pager, importar_pagers,
+    toggle_pager, importar_pagers, importar_grupos,
     listar_grupos, buscar_grupos, crear_grupo, actualizar_grupo, borrar_grupo,
     listar_extensiones, crear_extension, actualizar_extension, borrar_extension, generar_pjsip_conf,
     all_config, set_config, historial, enviar_mensaje, login_validar, verificar_token, cerrar_sesion)
@@ -915,6 +938,37 @@ def parse_import(body, filename):
         if item["codigo"] and item["cap_code"]: norm.append(item)
     return norm,None
 
+def parse_import_grupos(body, filename):
+    name=(filename or "").lower(); rows=[]
+    if name.endswith(".csv"):
+        for r in csv.DictReader(io.StringIO(body.decode("utf-8-sig",errors="replace"))): rows.append(r)
+    elif name.endswith(".xlsx"):
+        try: import openpyxl
+        except ImportError: return None,"openpyxl no instalado. Exporte la planilla como CSV."
+        tf=tempfile.NamedTemporaryFile(suffix=".xlsx",delete=False); tf.write(body); tf.close()
+        try:
+            wb=openpyxl.load_workbook(tf.name, read_only=True); ws=wb.active
+            data=list(ws.iter_rows(values_only=True))
+        finally: os.unlink(tf.name)
+        if not data: return [],None
+        headers=[str(h or "").strip().lower() for h in data[0]]
+        for row in data[1:]:
+            rows.append(dict(zip(headers,[("" if c is None else str(c)) for c in row])))
+    else:
+        return None,"Formato no soportado. Use .xlsx o .csv"
+    def pick(r,*keys):
+        for k in keys:
+            if k in r and str(r[k]).strip()!="": return str(r[k]).strip()
+        return ""
+    norm=[]
+    for r in rows:
+        item={"codigo":pick(r,"codigo","code","id"),
+              "nombre":pick(r,"nombre","name"),
+              "baudios":pick(r,"baudios","baud") or "1200",
+              "cap_codes":pick(r,"cap_codes","capcodes","caps","miembros","cap_code")}
+        if item["codigo"] and item["cap_codes"]: norm.append(item)
+    return norm,None
+
 class H(BaseHTTPRequestHandler):
     def _auth(self):
         a=self.headers.get("Authorization","")
@@ -957,6 +1011,9 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type","text/csv; charset=utf-8")
             self.send_header("Content-Disposition",'attachment; filename="historial_pocsag.csv"')
             self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data); return
+        if p=="/api/theme":
+            c=all_config()
+            return jr(self,{k:c.get(k,"") for k in ("theme_acc","theme_acc2","theme_bg","theme_panel")})
         if p=="/api/config":
             if not self._guard(): return
             return jr(self, all_config())
@@ -994,6 +1051,13 @@ class H(BaseHTTPRequestHandler):
                 if err: return jr(self,{"error":err},400)
                 if not rows: return jr(self,{"error":"El archivo no tiene filas validas con codigo y cap_code"},400)
                 return jr(self, importar_pagers(rows))
+            if p=="/api/grupos/import":
+                if not self._guard(): return
+                ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
+                rows,err=parse_import_grupos(body,unquote(self.headers.get("X-Filename","")))
+                if err: return jr(self,{"error":err},400)
+                if not rows: return jr(self,{"error":"El archivo no tiene filas validas con codigo y cap_codes"},400)
+                return jr(self, importar_grupos(rows))
             if p=="/api/extensions":
                 if not self._guard(): return
                 return jr(self,{"id":crear_extension(read_body(self))})
@@ -1060,7 +1124,7 @@ cat > "${APP_DIR}/frontend/index.html" <<'EOF'
 <style>
 :root{--bg:#0b1220;--panel:#111c30;--panel2:#15233c;--line:#1f3251;--txt:#e6edf7;--mut:#8aa0bd;--acc:#14b8a6;--acc2:#0ea5e9;--ok:#16a34a;--err:#dc2626;--warn:#d97706;--r:14px}
 *{box-sizing:border-box}
-body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(180deg,#0b1220,#0a0f1c 60%);color:var(--txt);min-height:100vh}
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(180deg,var(--bg),#0a0f1c 60%);color:var(--txt);min-height:100vh}
 .topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 1.4rem;background:rgba(11,18,32,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:.7rem;font-weight:700;letter-spacing:.2px}
 .brand .logo{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--acc),var(--acc2));font-size:20px}
@@ -1167,10 +1231,11 @@ function toast(ok,msg){const t=document.getElementById('e_res');t.className='toa
 async function buscarDest(q){
   const [pe,gr]=await Promise.all([fetch('/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')).then(r=>r.json()),fetch('/api/grupos'+(q?('?q='+encodeURIComponent(q)):'')).then(r=>r.json())]);
   const out=[];
-  (pe||[]).forEach(x=>out.push({codigo:x.codigo,label:`${x.nombre||''} ${x.apellido||''}`.trim()||x.codigo,sub:`${x.area||x.cap_code} · cap ${x.cap_code}`,tipo:'pager'}));
-  (gr||[]).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,sub:`GRUPO · ${(x.miembros||[]).length} pagers`,tipo:'grupo'}));
+  (pe||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:`${x.nombre||''} ${x.apellido||''}`.trim()||x.codigo,sub:`${x.area||x.cap_code} · cap ${x.cap_code}`,tipo:'pager'}));
+  (gr||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,sub:`GRUPO · ${(x.miembros||[]).length} pagers`,tipo:'grupo'}));
   return out;
 }
+async function applyTheme(){try{const t=await fetch('/api/theme').then(r=>r.json());const r=document.documentElement.style;if(t.theme_acc)r.setProperty('--acc',t.theme_acc);if(t.theme_acc2)r.setProperty('--acc2',t.theme_acc2);if(t.theme_bg)r.setProperty('--bg',t.theme_bg);if(t.theme_panel)r.setProperty('--panel',t.theme_panel);}catch(e){}}
 const eq=document.getElementById('e_q'),elist=document.getElementById('e_list');
 let btimer=null;
 eq.addEventListener('input',()=>{clearTimeout(btimer);btimer=setTimeout(async()=>{const r=await buscarDest(eq.value.trim());renderList(r);},180);});
@@ -1196,7 +1261,7 @@ async function loadHist(off){offset=off||0;document.getElementById('bit').innerH
 function pgGo(d){loadHist(Math.max(0,offset+d*PG));}
 function exportHist(){window.open('/api/historial/export?'+(function(){const p=new URLSearchParams();const d=document.getElementById('b_desde').value,h=document.getElementById('b_hasta').value,c=document.getElementById('b_codigo').value,i=document.getElementById('b_interno').value,e=document.getElementById('b_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p;})(),'_blank');}
 async function health(){try{const h=await fetch('/api/health').then(r=>r.json());const p=document.getElementById('h');p.className='pill '+(h.status==='ok'?'':'off');p.innerHTML=`<span class="dot"></span> ${h.status==='ok'?'en linea':'caido'}`;}catch(e){document.getElementById('h').className='pill off';document.getElementById('h').innerHTML='<span class="dot"></span> caido';}}
-(async()=>{health();setInterval(health,15000);})();
+(async()=>{applyTheme();health();setInterval(health,15000);})();
 </script></body></html>
 EOF
 
@@ -1207,7 +1272,7 @@ cat > "${APP_DIR}/frontend/admin.html" <<'EOF'
 <style>
 :root{--bg:#0b1220;--panel:#111c30;--panel2:#15233c;--line:#1f3251;--txt:#e6edf7;--mut:#8aa0bd;--acc:#14b8a6;--acc2:#0ea5e9;--ok:#16a34a;--err:#dc2626;--warn:#d97706;--r:14px}
 *{box-sizing:border-box}
-body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(180deg,#0b1220,#0a0f1c 60%);color:var(--txt);min-height:100vh}
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(180deg,var(--bg),#0a0f1c 60%);color:var(--txt);min-height:100vh}
 .login{min-height:100vh;display:grid;place-items:center;padding:1rem}
 .login .box{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:2.2rem;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,.45)}
 .login .logo{width:54px;height:54px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,var(--acc),var(--acc2));font-size:28px;margin:0 auto .8rem}
@@ -1286,6 +1351,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <button onclick="tab('hist',this)">🕘 Historial</button>
       <button onclick="tab('cfg',this)">⚙ Parametros</button>
       <button onclick="tab('pbx',this)">🔀 PBX</button>
+      <button onclick="tab('theme',this)">🎨 Apariencia</button>
     </nav>
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
@@ -1306,7 +1372,12 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, cap_code, nombre, apellido, area, baudios, descripcion. Los codigos existentes se actualizan.</p>
       <div class="drop" id="drop"><input type="file" id="ifile" accept=".xlsx,.csv" style="display:none"><div id="dftxt">Arrastre el archivo aqui o haga click para seleccionar</div></div>
       <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap"><button class="btn btn-pri" id="impbtn" onclick="doImport()" disabled>Importar</button><a class="btn btn-sec" href="data:text/csv;base64,Y29kaWdvLGNhcF9jb2RlLG5vbWJyZSxhcGVsbGlkbyxhcmVhLGJhdWRpb3MsZGVzY3JpcGNpb24KMTAsMDAwMjAyMCxKdWFuLFBlcmV6LEd1YXJkaWEgTWVkaWNhLDEyMDAsTWVkaWNvIGRlIGd1YXJkaWEK" download="plantilla_pagers.csv">Descargar plantilla</a></div>
-      <div id="imp_res" class="toast"></div></div></div>
+      <div id="imp_res" class="toast"></div></div>
+      <div class="card"><h2>📥 Importar grupos desde Excel</h2>
+      <p style="color:var(--mut);font-size:.85rem">Suba un archivo <b>.xlsx</b> o <b>.csv</b> con columnas: codigo, nombre, baudios, cap_codes (capcodes separados por coma). Los grupos existentes se actualizan.</p>
+      <div class="drop" id="dropG"><input type="file" id="ifileG" accept=".xlsx,.csv" style="display:none"><div id="dftxtG">Arrastre el archivo aqui o haga click para seleccionar</div></div>
+      <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap"><button class="btn btn-pri" id="impbtnG" onclick="doImportGrupos()" disabled>Importar grupos</button></div>
+      <div id="impG_res" class="toast"></div></div></div>
     <div class="tab" id="t-ext"><div class="card"><h2><span>☎ Extensiones Asterisk</span><button class="btn btn-pri btn-sm" onclick="openExt()">+ Nueva extension</button></h2>
       <div style="display:flex;gap:.6rem;margin-bottom:.8rem"><button class="btn btn-warn btn-sm" onclick="aplicarExt()">Aplicar a Asterisk</button></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Numero</th><th>Clave</th><th>Contexto</th><th>Descripcion</th><th>Activo</th><th></th></tr></thead><tbody id="tb_ext"></tbody></table></div></div></div>
@@ -1326,6 +1397,12 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="tab" id="t-pbx"><div class="card"><h2>🔀 Gestion del PBX</h2>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"><button class="btn btn-sec btn-sm" onclick="pbx('status')">Estado</button><button class="btn btn-sec btn-sm" onclick="pbx('peers')">Endpoints</button><button class="btn btn-sec btn-sm" onclick="pbx('channels')">Canales</button><button class="btn btn-sec btn-sm" onclick="pbx('uptime')">Uptime</button><button class="btn btn-warn btn-sm" onclick="pbxReload()">Recargar config</button><button class="btn btn-del btn-sm" onclick="pbxRestart()">Reiniciar PBX</button></div>
       <pre id="pbx_out">—</pre></div></div>
+    <div class="tab" id="t-theme"><div class="card"><h2>🎨 Apariencia de la web</h2>
+      <p style="color:var(--mut);font-size:.85rem;margin-top:0">Personalice los colores del panel publico y de administracion. Los cambios se aplican en ambos paneles al guardar.</p>
+      <div class="row"><div><label>Color principal</label><input id="th_acc" type="color" value="#14b8a6"></div><div><label>Color secundario</label><input id="th_acc2" type="color" value="#0ea5e9"></div></div>
+      <div class="row"><div><label>Fondo</label><input id="th_bg" type="color" value="#0b1220"></div><div><label>Panel</label><input id="th_panel" type="color" value="#111c30"></div></div>
+      <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="saveTheme()">Guardar colores</button><button class="btn btn-sec" onclick="resetTheme()">Restablecer por defecto</button></div>
+      <div id="th_res" class="toast"></div></div></div>
   </div>
 </div>
 <div class="modal" id="mPager"><div class="card"><h2 id="mPT">Pager</h2>
@@ -1348,7 +1425,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='enviar')initSend();}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',theme:'Apariencia'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='theme')loadTheme();if(id==='enviar')initSend();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -1359,7 +1436,7 @@ async function checkTok(){if(!TOKEN){return;}try{await api('GET','/api/extension
 // Enviar mensaje
 let sChosen=null,sTimer=null,sInit=false;
 function initSend(){if(sInit)return;sInit=true;const sq=document.getElementById('s_q');sq.addEventListener('input',()=>{clearTimeout(sTimer);sTimer=setTimeout(async()=>{const r=await buscarDestAdmin(sq.value.trim());renderSList(r);},180);});sq.addEventListener('focus',()=>{if(document.getElementById('s_list').innerHTML)document.getElementById('s_list').style.display='block';});}
-async function buscarDestAdmin(q){const [pe,gr]=await Promise.all([api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')),api('GET','/api/grupos'+(q?('?q='+encodeURIComponent(q)):''))]);const out=[];(pe||[]).forEach(x=>out.push({codigo:x.codigo,label:`${x.nombre||''} ${x.apellido||''}`.trim()||x.codigo,tipo:'pager'}));(gr||[]).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,tipo:'grupo'}));return out;}
+async function buscarDestAdmin(q){const [pe,gr]=await Promise.all([api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')),api('GET','/api/grupos'+(q?('?q='+encodeURIComponent(q)):''))]);const out=[];(pe||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:`${x.nombre||''} ${x.apellido||''}`.trim()||x.codigo,tipo:'pager'}));(gr||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,tipo:'grupo'}));return out;}
 function renderSList(r){const ul=document.getElementById('s_list');ul.innerHTML=r.map(x=>`<li onclick="pickS('${x.codigo}','${(x.label||'').replace(/'/g,'')}')" style="padding:.5rem .6rem;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between"><span>${x.label} <span style="color:var(--mut);font-size:.8rem">${x.codigo}</span></span><span style="font-size:.7rem;color:var(--acc);font-weight:700">${x.tipo}</span></li>`).join('');ul.style.display=r.length?'block':'none';}
 function pickS(codigo,label){sChosen=codigo;document.getElementById('s_q').value=label+' ('+codigo+')';document.getElementById('s_list').style.display='none';}
 document.addEventListener('click',e=>{const c=document.getElementById('s_q');if(c&&!c.contains(e.target)){const ul=document.getElementById('s_list');if(ul)ul.style.display='none';}});
@@ -1385,6 +1462,13 @@ ifile.addEventListener('change',e=>{impFile=e.target.files[0];dftxt.textContent=
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
 drop.addEventListener('drop',e=>{impFile=e.dataTransfer.files[0];dftxt.textContent=impFile.name;document.getElementById('impbtn').disabled=false;});
 async function doImport(){if(!impFile)return;const buf=await impFile.arrayBuffer();const r=await fetch('/api/pagers/import',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'X-Filename':encodeURIComponent(impFile.name)},body:buf}).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});const t=document.getElementById('imp_res');t.className='toast show '+(r.error?'err':'ok');t.textContent=r.error?('Error: '+r.error):`Importados: ${r.importados} · Errores: ${r.errores}`;if(!r.error){loadPagers();}}
+let impGFile=null;const dropG=document.getElementById('dropG'),ifileG=document.getElementById('ifileG'),dftxtG=document.getElementById('dftxtG');
+dropG.addEventListener('click',()=>ifileG.click());
+ifileG.addEventListener('change',e=>{impGFile=e.target.files[0];dftxtG.textContent=impGFile.name;document.getElementById('impbtnG').disabled=false;});
+['dragover','dragenter'].forEach(ev=>dropG.addEventListener(ev,e=>{e.preventDefault();dropG.classList.add('hover');}));
+['dragleave','drop'].forEach(ev=>dropG.addEventListener(ev,e=>{e.preventDefault();dropG.classList.remove('hover');}));
+dropG.addEventListener('drop',e=>{impGFile=e.dataTransfer.files[0];dftxtG.textContent=impGFile.name;document.getElementById('impbtnG').disabled=false;});
+async function doImportGrupos(){if(!impGFile)return;const buf=await impGFile.arrayBuffer();const r=await fetch('/api/grupos/import',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'X-Filename':encodeURIComponent(impGFile.name)},body:buf}).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});const t=document.getElementById('impG_res');t.className='toast show '+(r.error?'err':'ok');t.textContent=r.error?('Error: '+r.error):`Importados: ${r.importados} · Errores: ${r.errores}`;if(!r.error)loadGrupos();}
 // Extensiones
 async function loadExt(){const r=await api('GET','/api/extensions');document.getElementById('tb_ext').innerHTML=(r||[]).map(x=>`<tr><td>${x.numero}</td><td>${'*'.repeat((x.password||'').length||4)}</td><td>${x.contexto||''}</td><td>${x.descripcion||''}</td><td><button class="sw ${x.activo?'on':''}" onclick="toggleX(${x.id},${x.activo?0:1})"></button></td><td><button class="btn btn-sec btn-sm" onclick="openExt(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delX(${x.id})">✕</button></td></tr>`).join('')||`<tr><td colspan="6" style="color:var(--mut);text-align:center;padding:1rem">Sin extensiones</td></tr>`;}
 async function toggleX(id,act){const r=await api('GET','/api/extensions');const x=(r||[]).find(i=>i.id===id);if(x)await api('PUT','/api/extensiones/'+id,{...x,activo:act});loadExt();}
@@ -1401,12 +1485,17 @@ function exportHist(){const p=new URLSearchParams();const d=document.getElementB
 // Config
 async function loadConfig(){const c=await api('GET','/api/config');['admin_user','admin_pass','mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});}
 async function saveConfig(){const d={admin_user:document.getElementById('c_admin_user').value,admin_pass:document.getElementById('c_admin_pass').value,mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value};await api('PUT','/api/config',d);const t=document.getElementById('cfg_res');t.className='toast show ok';t.textContent='Parametros guardados';setTimeout(()=>t.className='toast',2500);}
+// Apariencia
+async function loadTheme(){const c=await api('GET','/api/config');['acc','acc2','bg','panel'].forEach(k=>{const el=document.getElementById('th_'+k);if(el&&c['theme_'+k])el.value=c['theme_'+k];});}
+async function saveTheme(){const d={theme_acc:document.getElementById('th_acc').value,theme_acc2:document.getElementById('th_acc2').value,theme_bg:document.getElementById('th_bg').value,theme_panel:document.getElementById('th_panel').value};await api('PUT','/api/config',d);applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Colores guardados';setTimeout(()=>t.className='toast',2500);}
+async function resetTheme(){await api('PUT','/api/config',{theme_acc:'#14b8a6',theme_acc2:'#0ea5e9',theme_bg:'#0b1220',theme_panel:'#111c30'});loadTheme();applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Valores restablecidos';setTimeout(()=>t.className='toast',2500);}
 // PBX
 async function pbx(cmd){const r=await api('GET','/api/pbx?cmd='+cmd);document.getElementById('pbx_out').textContent=r.salida||r.error||'';}
 async function pbxReload(){if(!confirm('Recargar configuracion del PBX?'))return;const r=await api('POST','/api/pbx/reload');document.getElementById('pbx_out').textContent=r.salida||'';}
 async function pbxRestart(){if(!confirm('Reiniciar PBX? Se cortaran llamadas activas.'))return;const r=await api('POST','/api/pbx/restart');document.getElementById('pbx_out').textContent=r.salida||'';}
+async function applyTheme(){try{const t=await fetch('/api/theme').then(r=>r.json());const r=document.documentElement.style;if(t.theme_acc)r.setProperty('--acc',t.theme_acc);if(t.theme_acc2)r.setProperty('--acc2',t.theme_acc2);if(t.theme_bg)r.setProperty('--bg',t.theme_bg);if(t.theme_panel)r.setProperty('--panel',t.theme_panel);}catch(e){}}
 async function health(){try{const h=await fetch('/api/health').then(r=>r.json());const p=document.getElementById('h');p.textContent=h.status==='ok'?'en linea':'caido';p.className='pill '+(h.status==='ok'?'':'off');}catch(e){}}
-checkTok();health();setInterval(health,20000);
+checkTok();applyTheme();health();setInterval(health,20000);
 </script></body></html>
 EOF
 
