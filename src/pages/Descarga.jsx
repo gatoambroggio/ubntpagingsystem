@@ -1,103 +1,162 @@
 import React, { useState } from "react";
+import {
+  Download,
+  Radio,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  Terminal,
+  ShieldAlert,
+  RefreshCw,
+  Server,
+} from "lucide-react";
 import JSZip from "jszip";
-import instaladorContent from "../_instaladorContent.js";
-
-// Carga el contenido de los archivos web de src/ en build-time.
-// Los .py/.sh/.html/.sql del pocsag-server ya van embebidos dentro de instalador.sh.
-const srcFiles = import.meta.glob("/src/**/*.{js,jsx,ts,tsx,json,css,md}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
 
 export default function Descarga() {
   const [busy, setBusy] = useState(false);
-  const [count, setCount] = useState(0);
+  const [error, setError] = useState("");
+  const [ok, setOk] = useState(false);
 
   const descargarZip = async () => {
+    setError("");
+    setOk(false);
     setBusy(true);
     try {
+      const res = await fetch("/instalador.sh");
+      if (!res.ok)
+        throw new Error("No se pudo obtener instalador.sh (HTTP " + res.status + ").");
+      const instalador = await res.text();
+      if (!instalador || instalador.length < 1000)
+        throw new Error("El instalador vino vacio o incompleto.");
       const zip = new JSZip();
-      let n = 0;
-      // Archivos individuales de src/
-      for (const [path, content] of Object.entries(srcFiles)) {
-        const rel = path.replace(/^\/src\//, "src/");
-        zip.file(rel, content);
-        n++;
-      }
-      // Instalador único en la raíz del zip
-      zip.file("instalador.sh", instaladorContent);
-      setCount(n);
-
+      zip.file("instalador.sh", instalador);
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "pocsag-server-src.zip";
+      a.download = "pocsag-instalador.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      setOk(true);
+    } catch (e) {
+      setError(e.message || String(e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
-      <div className="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-8">
-        <div className="flex items-center gap-3 mb-4">
-          <span className="text-3xl">🏥</span>
-          <h1 className="text-2xl font-bold">Sistema POCSAG — Descarga</h1>
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 text-slate-100 flex items-center justify-center p-6">
+      <div className="w-full max-w-2xl">
+        {/* Hero */}
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-cyan-500 grid place-items-center shadow-lg shadow-emerald-500/20">
+            <Radio className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Sistema POCSAG</h1>
+            <p className="text-sm text-slate-400">Paginacion hospitalaria autonoma</p>
+          </div>
         </div>
-        <p className="text-slate-300 mb-6 leading-relaxed">
-          Descargá <strong>toda la carpeta <code className="text-emerald-400">src/</code></strong> del
-          proyecto en un único <code className="text-emerald-400">.zip</code>, más el
-          instalador único <code className="text-emerald-400">instalador.sh</code> que
-          contiene el sistema completo embebido.
+
+        {/* Main download card */}
+        <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/70 backdrop-blur p-8 shadow-2xl">
+          <div className="absolute -top-24 -right-24 w-64 h-64 rounded-full bg-emerald-500/10 blur-3xl" />
+          <div className="relative">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="w-14 h-14 rounded-2xl bg-slate-800/80 border border-slate-700 grid place-items-center shrink-0">
+                <Download className="w-7 h-7 text-emerald-400" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold">Descarga el instalador completo</h2>
+                <p className="text-sm text-slate-400 leading-relaxed mt-1">
+                  Un unico archivo <code className="text-emerald-400 font-mono">instalador.sh</code> con todo el
+                  sistema embebido (panel web, backend, Asterisk, encoder POCSAG y base de datos).
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={descargarZip}
+              disabled={busy}
+              className="w-full bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25"
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Empaquetando...
+                </>
+              ) : (
+                <>
+                  <Download className="w-5 h-5" />
+                  Descargar pocsag-instalador.zip
+                </>
+              )}
+            </button>
+
+            {ok && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-3">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                Descarga lista. Si no inicio sola, revisa que el navegador no bloqueo la descarga.
+              </div>
+            )}
+            {error && (
+              <div className="mt-4 flex items-start gap-2 text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-3">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="break-words">{error}</span>
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center gap-2 text-xs text-slate-500">
+              <Server className="w-3.5 h-3.5" />
+              <span>Despliegue en Ubuntu Server 22.04 LTS</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Install instruction */}
+        <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+          <div className="flex items-center gap-2 mb-3 text-slate-300">
+            <Terminal className="w-4 h-4 text-cyan-400" />
+            <span className="text-sm font-semibold">Instalacion</span>
+          </div>
+          <div className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 font-mono text-sm">
+            <span className="text-slate-500"># En el servidor Ubuntu 22.04</span>
+            <div className="text-emerald-400 mt-1">sudo bash instalador.sh</div>
+          </div>
+        </div>
+
+        {/* Recovery + update */}
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+            <div className="flex items-center gap-2 mb-2 text-slate-200">
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-semibold">Si se rompio todo</span>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Reinstala desde cero con{" "}
+              <code className="text-emerald-400 font-mono">sudo bash instalador.sh --reset</code>.
+              Hace backup automatico en <code className="text-slate-300">/tmp/</code> y reinstala sin fallar.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+            <div className="flex items-center gap-2 mb-2 text-slate-200">
+              <RefreshCw className="w-4 h-4 text-cyan-400" />
+              <span className="text-sm font-semibold">Actualizacion rapida</span>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Edita <code className="text-emerald-400 font-mono">src/deploy.sh</code> con la IP de tu servidor y
+              ejecuta <code className="text-emerald-400 font-mono">bash src/deploy.sh</code>. Sube solo los
+              cambios y preserva la base. Ver <code className="text-slate-300">src/DEPLOY.md</code>.
+            </p>
+          </div>
+        </div>
+
+        <p className="text-center text-xs text-slate-600 mt-6">
+          Desinstalar: <code className="font-mono text-slate-500">sudo /opt/pocsag-server/bin/uninstall.sh</code>
         </p>
-
-        <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 mb-6 font-mono text-sm">
-          <div className="text-slate-500"># En el servidor Ubuntu 22.04</div>
-          <div className="text-emerald-400">sudo bash instalador.sh</div>
-        </div>
-
-        <button
-          onClick={descargarZip}
-          disabled={busy}
-          className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
-        >
-          {busy ? "Empaquetando…" : "⬇ Descargar pocsag-server-src.zip"}
-        </button>
-
-        {count > 0 && (
-          <p className="text-xs text-slate-500 mt-4 text-center">
-            {count} archivos de src/ + instalador.sh incluidos
-          </p>
-        )}
-        <p className="text-xs text-slate-500 mt-2 text-center">
-          Desinstalar luego: sudo /opt/pocsag-server/bin/uninstall.sh
-        </p>
-        <div className="mt-6 border-t border-slate-800 pt-4">
-          <p className="text-sm text-slate-300 leading-relaxed">
-            <strong className="text-slate-100">Si el sistema se rompio y no anda nada:</strong>{" "}
-            reinstala desde cero con{" "}
-            <code className="text-emerald-400">sudo bash instalador.sh --reset</code>.
-            Hace backup automatico de tu base de datos en <code>/tmp/</code>,
-            limpia todo y vuelve a instalar completo sin fallar.
-          </p>
-        </div>
-        <div className="mt-4">
-          <p className="text-sm text-slate-300 leading-relaxed">
-            <strong className="text-slate-100">Actualizacion rapida (sin reinstalar todo):</strong>{" "}
-            edita <code className="text-emerald-400">src/deploy.sh</code> con la
-            direccion de tu servidor y ejecuta{" "}
-            <code className="text-emerald-400">bash src/deploy.sh</code>. Sube
-            solo los cambios y preserva la base de datos. Ver{" "}
-            <code className="text-emerald-400">src/DEPLOY.md</code> para la guia
-            completa (incluye como funciona rsync).
-          </p>
-        </div>
       </div>
     </div>
   );
