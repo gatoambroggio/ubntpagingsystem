@@ -582,6 +582,9 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
             conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=CURRENT_TIMESTAMP, observaciones='' WHERE id=?",(item["id"],))
         else:
             conn.execute("UPDATE cola_envios SET estado='error', fecha_procesado=CURRENT_TIMESTAMP, observaciones=? WHERE id=?",(obs,item["id"]))
+    if not ok:
+        try: notificar_error("Error de envio POCSAG", f"Cola id={item['id']} codigo={item['codigo']} fallo: {obs}")
+        except Exception: pass
     return item["id"]
 
 def backup_db(db_path=DEFAULT_DB):
@@ -961,6 +964,31 @@ if __name__ == "__main__": main()
 EOF
 mkx "${APP_DIR}/agi/cola_worker.py"
 
+# --- agi/scheduler_worker.py ---
+cat > "${APP_DIR}/agi/scheduler_worker.py" <<'EOF'
+#!/usr/bin/env python3
+import sys, os, time
+sys.path.insert(0, "/opt/pocsag-server")
+from database.db_manager import procesar_programados
+
+def main():
+    os.makedirs("/opt/pocsag-server/logs", exist_ok=True)
+    while True:
+        try:
+            procesados = procesar_programados()
+            if procesados:
+                with open("/opt/pocsag-server/logs/scheduler.log","a") as f:
+                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] procesados: {procesados}\n")
+            time.sleep(30)
+        except Exception as e:
+            with open("/opt/pocsag-server/logs/scheduler.log","a") as f:
+                f.write(f"[ERROR] {e}\n")
+            time.sleep(60)
+
+if __name__ == "__main__": main()
+EOF
+mkx "${APP_DIR}/agi/scheduler_worker.py"
+
 # --- encoder/pocsag_gen.py ---
 cat > "${APP_DIR}/encoder/pocsag_gen.py" <<'EOF'
 #!/usr/bin/env python3
@@ -1134,6 +1162,13 @@ command -v sqlite3>/dev/null&&echo "[OK]   sqlite3"||{ echo "[FAIL] sqlite3"; ok
 command -v python3>/dev/null&&echo "[OK]   python3"||{ echo "[FAIL] python3"; ok=0; }
 python3 /opt/pocsag-server/encoder/pocsag_gen.py 123 test 1200 /tmp/_pocsag_test.wav 2>/dev/null && rm -f /tmp/_pocsag_test.wav && echo "[OK]   encoder POCSAG" || echo "[WARN] encoder POCSAG"
 [[ $ok -eq 1 ]]&&echo "Sistema POCSAG: SALUDABLE"||echo "Sistema POCSAG: REVISAR"
+if [[ $ok -eq 0 ]]; then
+  python3 -c "
+import sys; sys.path.insert(0,'/opt/pocsag-server')
+from database.db_manager import notificar_error
+notificar_error('Alerta POCSAG: sistema caido','Healthcheck detecto fallos. Revisar servicios y transmisor.')
+" 2>/dev/null||true
+fi
 exit $((1-ok))
 EOF
 mkx "${APP_DIR}/scripts/healthcheck.sh"
@@ -1220,6 +1255,23 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/pocsag-server/agi/cola_worker.py
 Restart=always
 RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# --- services/pocsag-scheduler.service ---
+cat > "${APP_DIR}/services/pocsag-scheduler.service" <<'EOF'
+[Unit]
+Description=Programador de envios POCSAG
+After=network.target pocsag-api.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pocsag-server/agi/scheduler_worker.py
+Restart=always
+RestartSec=10
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
@@ -1560,13 +1612,19 @@ class H(BaseHTTPRequestHandler):
         try:
             if parts[1]=="api" and parts[2]=="pagers" and len(parts)>3:
                 if not self._guard(): return
-                borrar_pager(int(parts[3])); return jr(self,{"ok":True})
+                borrar_pager(int(parts[3])); self._audit("eliminar","pager",parts[3],""); return jr(self,{"ok":True})
             if parts[1]=="api" and parts[2]=="grupos" and len(parts)>3:
                 if not self._guard(): return
-                borrar_grupo(int(parts[3])); return jr(self,{"ok":True})
+                borrar_grupo(int(parts[3])); self._audit("eliminar","grupo",parts[3],""); return jr(self,{"ok":True})
             if parts[1]=="api" and parts[2]=="extensiones" and len(parts)>3:
                 if not self._guard(): return
-                borrar_extension(int(parts[3])); return jr(self,{"ok":True})
+                borrar_extension(int(parts[3])); self._audit("eliminar","extension",parts[3],""); return jr(self,{"ok":True})
+            if parts[1]=="api" and parts[2]=="plantillas" and len(parts)>3:
+                if not self._guard(): return
+                borrar_plantilla(int(parts[3])); self._audit("eliminar","plantilla",parts[3],""); return jr(self,{"ok":True})
+            if parts[1]=="api" and parts[2]=="programados" and len(parts)>3:
+                if not self._guard(): return
+                borrar_programado(int(parts[3])); self._audit("eliminar","programado",parts[3],""); return jr(self,{"ok":True})
             self.send_response(404); self.end_headers()
         except Exception as e: return jr(self,{"error":str(e)},400)
     def log_message(self,*a): pass
@@ -1809,6 +1867,11 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <button onclick="tab('import',this)">📥 Importar</button>
       <button onclick="tab('ext',this)">☎ Extensiones</button>
       <button onclick="tab('hist',this)">🕘 Historial</button>
+      <button onclick="tab('dash',this)">📊 Dashboard</button>
+      <button onclick="tab('plantillas',this)">📝 Plantillas</button>
+      <button onclick="tab('programados',this)">📅 Programados</button>
+      <button onclick="tab('logs',this)">📄 Logs</button>
+      <button onclick="tab('aud',this)">🔍 Auditoria</button>
       <button onclick="tab('cfg',this)">⚙ Parametros</button>
       <button onclick="tab('pbx',this)">🔀 PBX</button>
       <button onclick="tab('theme',this)">🎨 Apariencia</button>
@@ -1882,6 +1945,31 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div id="db_res" class="toast"></div></div>
       <div class="card"><h2>Backup automatico</h2>
       <p style="color:var(--mut);font-size:.85rem;margin-top:0">Se realiza un backup automatico diario a las 3 AM. Los backups se guardan en /opt/pocsag-server/database/backups/ y se eliminan despues de 7 dias. Configure el email destino en Parametros para recibir copias por mail.</p></div></div>
+    <div class="tab" id="t-dash"><div class="card"><h2>📊 Estadisticas del sistema</h2>
+      <div id="dash_stats" style="display:flex;gap:.8rem;flex-wrap:wrap;margin-bottom:1.2rem"></div>
+      <div class="card" style="background:var(--panel2);margin-bottom:1rem"><h3 style="font-size:.9rem;margin:0 0 .6rem">Mensajes por dia (ultimos 30 dias)</h3><canvas id="chart_dia" height="120"></canvas></div>
+      <div class="card" style="background:var(--panel2);margin-bottom:1rem"><h3 style="font-size:.9rem;margin:0 0 .6rem">Mensajes por hora (hoy)</h3><canvas id="chart_hora" height="120"></canvas></div>
+      <div class="card" style="background:var(--panel2)"><h3 style="font-size:.9rem;margin:0 0 .6rem">Pagers mas activos</h3><div id="dash_top"></div></div>
+      <button class="btn btn-sec btn-sm" onclick="loadDash()" style="margin-top:1rem">🔄 Actualizar</button></div></div>
+    <div class="tab" id="t-plantillas"><div class="card"><h2><span>📝 Plantillas de mensajes</span><button class="btn btn-pri btn-sm" onclick="openPlantilla()">+ Nueva plantilla</button></h2>
+      <div style="overflow-x:auto"><table><thead><tr><th>Nombre</th><th>Categoria</th><th>Mensaje</th><th>Orden</th><th>Activo</th><th></th></tr></thead><tbody id="tb_plantillas"></tbody></table></div></div></div>
+    <div class="tab" id="t-programados"><div class="card"><h2><span>📅 Envios programados</span><button class="btn btn-pri btn-sm" onclick="openProgramado()">+ Nuevo envio</button></h2>
+      <div style="overflow-x:auto"><table><thead><tr><th>Codigo</th><th>Mensaje</th><th>Tipo</th><th>Fecha/Proxima</th><th>Activo</th><th></th></tr></thead><tbody id="tb_programados"></tbody></table></div></div></div>
+    <div class="tab" id="t-logs"><div class="card"><h2>📄 Visor de logs</h2>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('api')">API</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('asterisk')">Asterisk</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('cola')">Cola</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('scheduler')">Scheduler</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('backup')">Backup</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('health')">Health</button>
+        <button class="btn btn-sec btn-sm" onclick="loadLogs('install')">Instalador</button>
+        <button class="btn btn-ok btn-sm" onclick="loadLogs(curLogType)">🔄 Recargar</button>
+      </div>
+      <pre id="log_out" style="max-height:500px">Seleccione un log para ver.</pre></div></div>
+    <div class="tab" id="t-aud"><div class="card"><h2>🔍 Auditoria de cambios</h2>
+      <div style="overflow-x:auto"><table><thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Accion</th><th>Entidad</th><th>ID</th><th>Detalle</th><th>IP</th></tr></thead><tbody id="tb_aud"></tbody></table></div>
+      <button class="btn btn-sec btn-sm" onclick="loadAud()" style="margin-top:1rem">🔄 Actualizar</button></div></div>
   </div>
 </div>
 <div class="modal" id="mPager"><div class="card"><h2 id="mPT">Pager</h2>
@@ -1900,6 +1988,17 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
   <label>Contexto</label><input id="x_ctx" value="pocsag-incoming">
   <label>Descripcion</label><input id="x_desc">
   <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="saveExt()">Guardar</button><button class="btn btn-sec" onclick="closeModal('mExt')">Cancelar</button></div></div></div>
+<div class="modal" id="mPlantilla"><div class="card"><h2 id="mPLT">Plantilla</h2>
+  <div class="row"><div><label>Nombre</label><input id="pl_nombre"></div><div><label>Categoria</label><input id="pl_cat" value="general"></div></div>
+  <label>Mensaje</label><textarea id="pl_mensaje" rows="3"></textarea>
+  <div class="row"><div><label>Orden</label><input id="pl_orden" type="number" value="0"></div></div>
+  <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="savePlantilla()">Guardar</button><button class="btn btn-sec" onclick="closeModal('mPlantilla')">Cancelar</button></div></div></div>
+<div class="modal" id="mProgramado"><div class="card"><h2 id="mPRT">Envio programado</h2>
+  <div class="row"><div><label>Codigo</label><input id="pr_codigo"></div><div><label>Tipo</label><select id="pr_tipo"><option value="unico">Unico</option><option value="diario">Diario</option><option value="semanal">Semanal</option><option value="mensual">Mensual</option></select></div></div>
+  <label>Mensaje</label><textarea id="pr_mensaje" rows="3"></textarea>
+  <div class="row"><div><label>Fecha programada (unico)</label><input id="pr_fecha" type="datetime-local"></div><div><label>Hora recurrente (HH:MM)</label><input id="pr_hora" type="time" value="08:00"></div></div>
+  <div class="row"><div><label>Dia (mensual 1-31)</label><input id="pr_dia" type="number" min="1" max="31" value="1"></div></div>
+  <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="saveProgramado()">Guardar</button><button class="btn btn-sec" onclick="closeModal('mProgramado')">Cancelar</button></div></div></div>
 <script>
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null; const HPG=50; let hoff=0,htot=0;
@@ -1998,8 +2097,8 @@ set -euo pipefail
 APP="/opt/pocsag-server"; PURGE=0
 [[ "${1:-}" == "--purge" ]] && PURGE=1
 [[ $EUID -ne 0 ]] && { echo "root/sudo"; exit 1; }
-systemctl disable --now pocsag-monitor pocsag-api 2>/dev/null||true
-rm -f /etc/systemd/system/pocsag-{monitor,api}.service
+systemctl disable --now pocsag-monitor pocsag-api pocsag-cola pocsag-scheduler 2>/dev/null||true
+rm -f /etc/systemd/system/pocsag-{monitor,api,cola,scheduler}.service
 systemctl daemon-reload
 rm -f /etc/asterisk/extensions_pocsag.conf /etc/asterisk/pjsip_pocsag.conf
 rm -f /var/lib/asterisk/agi-bin/pocsag_handler.py /var/lib/asterisk/agi-bin/pocsag_check.py
@@ -2088,6 +2187,8 @@ systemctl restart pocsag-monitor 2>/dev/null || true
 systemctl enable pocsag-monitor 2>/dev/null || true
 systemctl restart pocsag-cola 2>/dev/null || warn "Cola worker no pudo iniciarse"
 systemctl enable pocsag-cola 2>/dev/null || true
+systemctl restart pocsag-scheduler 2>/dev/null || warn "Scheduler no pudo iniciarse"
+systemctl enable pocsag-scheduler 2>/dev/null || true
 sleep 3
 
 # ============================ 10. CHEQUEO ================================
