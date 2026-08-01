@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { motion } from "framer-motion";
 import { FileCode, Copy, Check, Server, Terminal } from "lucide-react";
 
 const FILES = [
@@ -43,35 +44,57 @@ export default function Codigo() {
   const err = errores[activo];
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-slate-100 p-6">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-500 to-cyan-500 grid place-items-center shadow-lg shadow-emerald-500/20">
-            <FileCode className="w-5 h-5 text-white" />
+    <div className="relative min-h-screen overflow-hidden bg-[#070b16] text-slate-100">
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-40 w-[30rem] h-[30rem] rounded-full bg-indigo-500/15 blur-[120px]" />
+        <div className="absolute bottom-0 -left-32 w-[28rem] h-[28rem] rounded-full bg-cyan-500/15 blur-[120px]" />
+      </div>
+
+      <div className="relative max-w-5xl mx-auto px-6 py-10">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="flex items-center gap-3 mb-7"
+        >
+          <div className="w-12 h-12 rounded-3xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-indigo-500 grid place-items-center shadow-xl shadow-cyan-500/30">
+            <FileCode className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-bold tracking-tight">Archivos del servidor</h1>
+            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-cyan-200 bg-clip-text text-transparent">
+              Archivos del servidor
+            </h1>
             <p className="text-sm text-slate-400">Codigo fuente para pegar en el servidor Ubuntu</p>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="flex gap-2 mb-4 flex-wrap">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="flex gap-2 mb-4 flex-wrap"
+        >
           {FILES.map((file, i) => (
             <button
               key={file.nombre}
               onClick={() => setActivo(i)}
-              className={`px-3.5 py-2 rounded-xl text-sm font-mono transition-all ${
+              className={`px-4 py-2 rounded-2xl text-sm font-mono transition-all ${
                 i === activo
-                  ? "bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-md shadow-emerald-500/25"
-                  : "bg-slate-800/70 text-slate-300 hover:bg-slate-700/70 border border-slate-700/50"
+                  ? "bg-gradient-to-r from-emerald-500 via-cyan-500 to-indigo-500 text-white shadow-md shadow-cyan-500/30"
+                  : "bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] border border-white/10"
               }`}
             >
               {file.nombre}
             </button>
           ))}
-        </div>
+        </motion.div>
 
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.15 }}
+          className="flex items-center justify-between mb-3 flex-wrap gap-2"
+        >
           <p className="text-slate-400 text-sm flex items-center gap-2">
             <Server className="w-4 h-4 text-cyan-400" />
             Pegalo en <code className="text-emerald-400 font-mono">{f.ruta}</code>
@@ -79,29 +102,34 @@ export default function Codigo() {
           <button
             onClick={copiar}
             disabled={!codigo}
-            className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 disabled:opacity-50 text-white font-semibold px-4 py-2 rounded-xl transition-all text-sm shadow-md shadow-emerald-500/20"
+            className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:brightness-110 disabled:opacity-50 text-white font-semibold px-4 py-2 rounded-2xl transition-all text-sm shadow-md shadow-cyan-500/25"
           >
             {copiado ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             {copiado ? "Copiado" : "Copiar codigo"}
           </button>
-        </div>
+        </motion.div>
 
-        <div className="rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.2 }}
+          className="rounded-3xl bg-black/40 border border-white/10 backdrop-blur-xl overflow-hidden"
+        >
           {err ? (
             <div className="p-6 text-sm text-rose-300">
               No se pudo cargar el archivo ({err}). Verifica que exista en el servidor.
             </div>
           ) : codigo === undefined ? (
             <div className="p-6 text-sm text-slate-500 flex items-center gap-2">
-              <span className="w-4 h-4 border-2 border-slate-700 border-t-emerald-500 rounded-full animate-spin" />
+              <span className="w-4 h-4 border-2 border-white/10 border-t-cyan-400 rounded-full animate-spin" />
               Cargando...
             </div>
           ) : (
-            <pre className="p-4 overflow-auto text-xs leading-relaxed font-mono text-slate-300 max-h-[68vh]">
+            <pre className="p-5 overflow-auto text-xs leading-relaxed font-mono text-slate-300 max-h-[68vh]">
               <code>{codigo}</code>
             </pre>
           )}
-        </div>
+        </motion.div>
 
         <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
           <Terminal className="w-3.5 h-3.5 text-cyan-400" />
