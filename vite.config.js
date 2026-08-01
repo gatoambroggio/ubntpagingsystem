@@ -19,14 +19,15 @@ function rawTextFallback() {
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
         const inst = path.resolve(root, 'instalador.sh')
         if (fs.existsSync(inst)) fs.copyFileSync(inst, path.resolve(destDir, 'instalador.sh'))
-        const srcDir = path.resolve(root, 'src', 'pocsag-server')
-        const destSrc = path.resolve(destDir, 'source', 'pocsag-server')
-        try { fs.rmSync(destSrc, { recursive: true, force: true }) } catch {}
+        const srcRoot = path.resolve(root, 'src')
+        const destSrc = path.resolve(destDir, 'source', 'src')
+        try { fs.rmSync(path.resolve(destDir, 'source'), { recursive: true, force: true }) } catch {}
         const manifest = []
+        const skip = new Set(['__pycache__', '.git', 'node_modules'])
         const copyDir = (d, rel) => {
           if (!fs.existsSync(d)) return
           for (const e of fs.readdirSync(d)) {
-            if (e === '__pycache__' || e === '.git') continue
+            if (skip.has(e)) continue
             const fp = path.join(d, e)
             const r = rel ? rel + '/' + e : e
             const st = fs.statSync(fp)
@@ -35,11 +36,11 @@ function rawTextFallback() {
               const dp = path.resolve(destSrc, r)
               fs.mkdirSync(path.dirname(dp), { recursive: true })
               fs.copyFileSync(fp, dp)
-              manifest.push('pocsag-server/' + r)
+              manifest.push('src/' + r)
             }
           }
         }
-        copyDir(srcDir, '')
+        copyDir(srcRoot, '')
         fs.writeFileSync(path.resolve(destDir, 'source-manifest.json'), JSON.stringify(manifest))
       } catch {}
     },
