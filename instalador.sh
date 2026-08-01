@@ -260,7 +260,10 @@ INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES
 
 INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion) VALUES
  ('101','CAMBIAR_PASSWORD_101','pocsag-incoming','Prueba Zoiper'),
- ('2184','CAMBIAR_PASSWORD_2184','pocsag-incoming','Linea entrante POCSAG');
+ ('2184','CAMBIAR_PASSWORD_2184','pocsag-incoming','Linea entrante POCSAG 1'),
+ ('2185','CAMBIAR_PASSWORD_2185','pocsag-incoming','Linea entrante POCSAG 2'),
+ ('2186','CAMBIAR_PASSWORD_2186','pocsag-incoming','Linea entrante POCSAG 3'),
+ ('2187','CAMBIAR_PASSWORD_2187','pocsag-incoming','Linea entrante POCSAG 4');
 
 INSERT OR IGNORE INTO plantillas (nombre,mensaje,categoria,orden) VALUES
  ('Codigo Azul','CODIGO AZUL - Emergencia medica - Concurrir de inmediato','emergencia',1),
@@ -428,9 +431,53 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
                 "transport=transport-udp",f"auth={num}-auth",f"aors={num}-aor","",
                 f"[{num}-auth]","type=auth","auth_type=userpass",f"username={num}",f"password={e['password'] or ''}","",
                 f"[{num}-aor]","type=aor","max_contacts=1",""]
-    conf="/etc/asterisk/pjsip_pocsag.conf"
+    conf="/etc/asterisk/pocsag.conf"
     try:
         with open(conf,"w") as f: f.write("\n".join(lines)+"\n")
+        return True
+    except PermissionError:
+        return False
+
+def generar_dialplan_conf(db_path=DEFAULT_DB):
+    exts=listar_extensiones(db_path)
+    activos=[e["numero"] for e in exts if e["activo"]]
+    nums=activos if activos else ["2184"]
+    header="[pocsag-incoming]\n"
+    body=""
+    for num in nums:
+        body+=(
+f"""exten => {num},1,NoOp(=== Paginacion hospitalaria POCSAG ===)
+ same => n,Answer()
+ same => n,Set(TIMEOUT(digit)=5)
+ same => n,Set(TIMEOUT(response)=30)
+ same => n(loop),Playback(despues-del-tono-marque-codigo)
+ same => n,Playback(beep)
+ same => n,Read(CODE,,8,,3,5)
+ same => n,GotoIf($["${{CODE}}" = ""]?fin)
+ same => n,AGI(/var/lib/asterisk/agi-bin/pocsag_check.py,${{CODE}})
+ same => n,GotoIf($["${{POCSAG_VALID}}" = "1"]?pedir_mensaje:codigo_invalido)
+ same => n(codigo_invalido),Playback(codigo-inexistente)
+ same => n,Playback(marque-otro-codigo)
+ same => n,Wait(0.5)
+ same => n,Goto(loop)
+ same => n(pedir_mensaje),Playback(despues-de-la-senal-su-mensaje)
+ same => n,Playback(beep)
+ same => n,Read(MESSAGE,,16,,3,${{POCSAG_MSJ_TIMEOUT}})
+ same => n,GotoIf($["${{MESSAGE}}" = ""]?mensaje_vacio:enviar)
+ same => n(enviar),AGI(/var/lib/asterisk/agi-bin/pocsag_handler.py,${{CALLERID(num)}},${{CODE}},${{MESSAGE}})
+ same => n,GotoIf($["${{AGISTATUS}}" = "SUCCESS"]?ok:fail)
+ same => n(ok),Playback(confirmado)
+ same => n,Hangup()
+ same => n(fail),Playback(error-envio)
+ same => n,Hangup()
+ same => n(mensaje_vacio),Playback(mensaje-vacio)
+ same => n,Goto(pedir_mensaje)
+ same => n(fin),Playback(mensaje-vacio)
+ same => n,Hangup()
+""")
+    conf="/etc/asterisk/extensions_pocsag.conf"
+    try:
+        with open(conf,"w") as f: f.write(header+body+"\n")
         return True
     except PermissionError:
         return False
@@ -571,8 +618,9 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         conn.commit()
     item=dict(row)
     try:
+        env={**os.environ,"POCSAG_WORKER":"1"}
         rc=subprocess.run([sys.executable,handler,item["origen"] or "cola",item["codigo"],item["mensaje"]],
-                          capture_output=True,text=True,timeout=120)
+                          capture_output=True,text=True,timeout=120,env=env)
         ok = rc.returncode==0
         obs = "" if ok else (rc.stderr or rc.stdout or "fallo").strip()[:200]
     except Exception as e:
@@ -875,7 +923,7 @@ cat > "${APP_DIR}/agi/pocsag_handler.py" <<'EOF'
 #!/usr/bin/env python3
 import sys, os, subprocess, traceback, time
 sys.path.insert(0, "/opt/pocsag-server")
-from database.db_manager import resolver_destino, registrar_bitacora, get_config
+from database.db_manager import resolver_destino, registrar_bitacora, encolar_mensaje, get_config
 
 AUDIO_DIR = "/opt/pocsag-server/audio"
 PTT_ON = "/opt/pocsag-server/scripts/ptt_on.sh"
@@ -899,6 +947,12 @@ def main():
         dest = resolver_destino(codigo)
         if not dest: log(f"Codigo no encontrado: {codigo}"); fail()
         caps, baudios, tipo = dest
+        # Si viene del IVR (telefono), encolar y salir. El worker procesa la transmision.
+        if os.environ.get("POCSAG_WORKER") != "1":
+            qid = encolar_mensaje(codigo, caps, mensaje, baudios, interno)
+            sys.stdout.write("SET VARIABLE AGISTATUS SUCCESS\n"); sys.stdout.flush()
+            log(f"Mensaje encolado (IVR) id={qid} interno={interno} codigo={codigo} msg={mensaje}")
+            return
         cap_list = [c.strip() for c in caps.split(",") if c.strip()]
         test_mode = get_config("test_mode","1") == "1"
         ptt_preactivo = float(get_config("ptt_preactivo","0.5"))
@@ -1288,7 +1342,7 @@ sys.path.insert(0, "/opt/pocsag-server")
 from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actualizar_pager, borrar_pager,
     toggle_pager, importar_pagers, importar_grupos,
     listar_grupos, buscar_grupos, crear_grupo, actualizar_grupo, borrar_grupo,
-    listar_extensiones, crear_extension, actualizar_extension, borrar_extension, generar_pjsip_conf,
+    listar_extensiones, crear_extension, actualizar_extension, borrar_extension, generar_pjsip_conf, generar_dialplan_conf,
     all_config, set_config, historial, enviar_mensaje, login_validar, verificar_token, cerrar_sesion,
     listar_cola, estado_cola, reintentar_cola, limpiar_cola, procesar_siguiente_cola,
     backup_db, restore_db, enviar_email,
@@ -1537,7 +1591,8 @@ class H(BaseHTTPRequestHandler):
             if p=="/api/extensions/aplicar":
                 if not self._guard(): return
                 if not generar_pjsip_conf(): return jr(self,{"error":"no se pudo escribir /etc/asterisk/pjsip_pocsag.conf (permisos)"},400)
-                return jr(self,{"salida":"Configuracion PJSIP regenerada y recargada.\n"+ast_run("pjsip reload")})
+                generar_dialplan_conf()
+                return jr(self,{"salida":"Configuracion PJSIP y dialplan regenerados.\n"+ast_run("pjsip reload")+"\n"+ast_run("dialplan reload")})
             if p=="/api/pbx/reload":
                 if not self._guard(): return
                 out=ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")
@@ -2006,7 +2061,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null,editPL=null,editPR=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',theme:'Apariencia',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='theme')loadTheme();if(id==='cola')loadCola();if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',theme:'Apariencia',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='theme')loadTheme();if(id==='cola'){loadCola();histTimer=setInterval(loadCola,4000);}if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -2158,7 +2213,14 @@ cp "$ivr_file" "${AST_ETC}/extensions_pocsag.conf"
 grep -q 'extensions_pocsag.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_pocsag.conf' >> "${AST_ETC}/extensions.conf"
 cp "${APP_DIR}/asterisk/pjsip_pocsag.conf" "${AST_ETC}/"
 grep -q 'pjsip_pocsag.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_pocsag.conf' >> "${AST_ETC}/pjsip.conf"
-log "Dialplan + endpoint 101 integrados (Asterisk nativo)."
+# Regenerar pjsip + dialplan desde la BD (todas las extensiones activas: 2184-2187)
+python3 -c "
+import sys; sys.path.insert(0,'${APP_DIR}')
+from database.db_manager import generar_pjsip_conf, generar_dialplan_conf
+ok1=generar_pjsip_conf(); ok2=generar_dialplan_conf()
+print('pjsip='+str(ok1),'dialplan='+str(ok2))
+" 2>/dev/null || warn "No se pudo regenerar config desde BD (se usa el estatico)"
+log "Dialplan + endpoints integrados (Asterisk nativo)."
 
 # ============================ 8. LOCUCIONES ===============================
 echo "==> 8/10 Locuciones IVR..."
