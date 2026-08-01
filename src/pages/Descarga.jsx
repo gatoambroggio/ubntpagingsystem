@@ -80,6 +80,15 @@ export default function Descarga() {
         </p>
         <div className="mt-6 border-t border-slate-800 pt-4">
           <p className="text-sm text-slate-300 leading-relaxed">
+            <strong className="text-slate-100">Si el sistema se rompio y no anda nada:</strong>{" "}
+            reinstala desde cero con{" "}
+            <code className="text-emerald-400">sudo bash instalador.sh --reset</code>.
+            Hace backup automatico de tu base de datos en <code>/tmp/</code>,
+            limpia todo y vuelve a instalar completo sin fallar.
+          </p>
+        </div>
+        <div className="mt-4">
+          <p className="text-sm text-slate-300 leading-relaxed">
             <strong className="text-slate-100">Actualizacion rapida (sin reinstalar todo):</strong>{" "}
             edita <code className="text-emerald-400">src/deploy.sh</code> con la
             direccion de tu servidor y ejecuta{" "}

@@ -13,7 +13,9 @@ APP_DIR="/opt/pocsag-server"
 AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
 UPDATE=0
+RESET=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
+[[ "${1:-}" == "--reset" ]] && RESET=1
 
 G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; NC="\033[0m"
 log()  { echo -e "${G}[OK]${NC}   $*"; }
@@ -28,7 +30,19 @@ mkdir -p "${LOG_FILE%/*}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
-if [[ $UPDATE -eq 1 ]]; then
+if [[ $RESET -eq 1 ]]; then
+  echo "==> REINSTALACION COMPLETA (modo --reset) en ${APP_DIR}"
+  echo "    Se hace backup de la base de datos y se reinstala desde cero."
+  systemctl stop pocsag-api pocsag-monitor 2>/dev/null || true
+  if [[ -f "${APP_DIR}/database/pocsag.db" ]]; then
+    BK="/tmp/pocsag-backup-$(date +%Y%m%d%H%M%S).db"
+    cp "${APP_DIR}/database/pocsag.db" "$BK"
+    log "Backup de la base guardado en ${BK}"
+  else
+    warn "No habia base de datos previa. Se creara una nueva vacia."
+  fi
+  rm -rf "${APP_DIR}"
+elif [[ $UPDATE -eq 1 ]]; then
   echo "==> ACTUALIZACION RAPIDA (modo --update) en ${APP_DIR}"
 else
   echo "==> Instalando sistema POCSAG + FreePBX en ${APP_DIR}"
@@ -1458,6 +1472,14 @@ chown -R "${AST_USER}:${AST_USER}" "${APP_DIR}" 2>/dev/null || true
 # ============================ 6. BASE DE DATOS =============================
 echo "==> 6/10 Base de datos..."
 python3 "${APP_DIR}/database/db_manager.py" init
+# Forzar credenciales admin validas (INSERT OR IGNORE preserva valores existentes)
+python3 -c "
+import sqlite3
+c = sqlite3.connect('${APP_DIR}/database/pocsag.db')
+c.execute('INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)', ('admin_user','admin'))
+c.execute('INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)', ('admin_pass','admin123'))
+c.commit(); c.close()
+"
 chmod 640 "${APP_DIR}/database/pocsag.db" 2>/dev/null || true
 
 # ============================ 7. DIALPLAN + AGI ============================
@@ -1531,12 +1553,25 @@ else
   asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
   asterisk -rx "pjsip reload" 2>/dev/null || true
 fi
-systemctl enable --now pocsag-api 2>/dev/null || warn "API no pudo activarse"
-systemctl enable --now pocsag-monitor 2>/dev/null || true
+systemctl daemon-reload
+systemctl restart pocsag-api 2>/dev/null || warn "API no pudo reiniciarse"
+systemctl enable pocsag-api 2>/dev/null || true
+systemctl restart pocsag-monitor 2>/dev/null || true
+systemctl enable pocsag-monitor 2>/dev/null || true
+sleep 3
 
 # ============================ 10. CHEQUEO ================================
 echo "==> 10/10 Chequeo..."
 bash "${APP_DIR}/scripts/healthcheck.sh" || warn "Healthcheck reporto problemas"
+
+echo "==> Verificando API..."
+if curl -sf "http://localhost:8080/api/health" >/dev/null 2>&1; then
+  log "API responde en http://localhost:8080"
+else
+  warn "API no responde. Diagnostico:"
+  systemctl status pocsag-api --no-pager -l 2>/dev/null | head -20 || true
+  journalctl -u pocsag-api -n 20 --no-pager 2>/dev/null || true
+fi
 
 echo "--------------------------------------------"
 if [[ $UPDATE -eq 1 ]]; then
@@ -1572,5 +1607,6 @@ PRUEBAS (Zoiper -> 101 -> 2184):
   Bitacora: sqlite3 /opt/pocsag-server/database/pocsag.db "SELECT * FROM bitacora ORDER BY id DESC LIMIT 5;"
 
   FreePBX no instalado? Ejecuta:  sudo INSTALL_FREEPBX=1 bash instalador.sh
+  Reinstalar desde cero (backup automatico de la base): sudo bash instalador.sh --reset
   Desinstalar POCSAG: sudo /opt/pocsag-server/bin/uninstall.sh
 EOF
