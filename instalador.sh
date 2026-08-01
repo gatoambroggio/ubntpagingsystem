@@ -13,6 +13,7 @@ AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
 UPDATE=0
 RESET=0
+VERSION="1.0"
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 [[ "${1:-}" == "--reset" ]] && RESET=1
 
@@ -1499,6 +1500,7 @@ class H(BaseHTTPRequestHandler):
         if p in ("/","/index.html"): return self.serve_file("index.html","text/html; charset=utf-8")
         if p in ("/admin","/admin.html"): return self.serve_file("admin.html","text/html; charset=utf-8")
         if p=="/api/health": return jr(self,{"status":"ok"})
+        if p=="/api/version": return jr(self,{"version":all_config().get("version","1.0")})
         if p=="/api/pagers":
             qq=q.get("q",[""])[0]; return jr(self,buscar_pagers(qq) if qq else listar_pagers())
         if p=="/api/grupos":
@@ -1804,6 +1806,7 @@ tbody tr:hover{background:rgba(20,184,166,.05)}
 <div class="topbar">
   <div class="brand"><div class="logo">🧭</div><div>POCSAG<small>paginacion hospitalaria</small></div></div>
   <span id="h" class="pill"><span class="dot"></span> en linea</span>
+  <span id="ver" class="badge mut" style="margin-left:auto">v1.0</span>
 </div>
 <div class="tabs">
   <button class="active" onclick="tab('enviar',this)">📨 Enviar mensaje</button>
@@ -1883,7 +1886,7 @@ function exportHist(){window.open('/api/historial/export?'+(function(){const p=n
 async function health(){try{const h=await fetch('/api/health').then(r=>r.json());const p=document.getElementById('h');p.className='pill '+(h.status==='ok'?'':'off');p.innerHTML=`<span class="dot"></span> ${h.status==='ok'?'en linea':'caido'}`;}catch(e){document.getElementById('h').className='pill off';document.getElementById('h').innerHTML='<span class="dot"></span> caido';}}
 async function loadTpl(){try{const t=await fetch('/api/plantillas').then(r=>r.json());const act=(t||[]).filter(x=>x.activo);if(!act.length)return;document.getElementById('e_tpl_wrap').style.display='block';document.getElementById('e_tpl').innerHTML=act.map(x=>`<button type="button" class="btn btn-sec btn-sm" onclick="useTpl(${x.id})" data-id="${x.id}">${x.nombre}</button>`).join('');window._tpls=act;}catch(e){}}
 function useTpl(id){const t=(window._tpls||[]).find(x=>x.id===id);if(t)document.getElementById('e_msg').value=t.mensaje;}
-(async()=>{applyTheme();health();setInterval(health,15000);loadTpl();})();
+(async()=>{applyTheme();health();setInterval(health,15000);loadTpl();loadVersion();})();async function loadVersion(){try{const v=await fetch('/api/version').then(r=>r.json());const el=document.getElementById('ver');if(el)el.textContent='v'+(v.version||'1.0');}catch(e){}}
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
@@ -2034,7 +2037,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
   <div class="content">
-    <div class="topbar"><h1 id="tit">Pagers</h1></div>
+    <div class="topbar"><h1 id="tit">Pagers</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.0</span></div>
     <div class="tab" id="t-enviar"><div class="card"><h2>📨 Enviar mensaje</h2>
       <div class="field"><label>Buscar destinatario (nombre, codigo o area)</label>
       <div style="position:relative"><input id="s_q" autocomplete="off" placeholder="Escriba para buscar..."><ul id="s_list" style="position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:var(--panel2);border:1px solid var(--line);border-radius:10px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none"></ul></div></div>
@@ -2087,7 +2090,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
           </div>
         </div>
         <pre id="smtp_log" style="max-height:260px;font-size:.72rem;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:.8rem;overflow:auto">- sin registros todavia. Presiona "Probar SMTP" para generar actividad. -</pre>
-      </div></div></div>
+      </div></div></div></div>
     <div class="tab" id="t-pbx"><div class="card"><h2>🔀 Gestion del PBX</h2>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"><button class="btn btn-sec btn-sm" onclick="pbx('status')">Estado</button><button class="btn btn-sec btn-sm" onclick="pbx('peers')">Endpoints</button><button class="btn btn-sec btn-sm" onclick="pbx('channels')">Canales</button><button class="btn btn-sec btn-sm" onclick="pbx('uptime')">Uptime</button><button class="btn btn-warn btn-sm" onclick="pbxReload()">Recargar config</button><button class="btn btn-del btn-sm" onclick="pbxRestart()">Reiniciar PBX</button></div>
       <pre id="pbx_out">—</pre></div></div>
@@ -2128,7 +2131,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="tab" id="t-aud"><div class="card"><h2>🔍 Auditoria de cambios</h2>
       <div style="overflow-x:auto"><table><thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Accion</th><th>Entidad</th><th>ID</th><th>Detalle</th><th>IP</th></tr></thead><tbody id="tb_aud"></tbody></table></div>
       <button class="btn btn-sec btn-sm" onclick="loadAud()" style="margin-top:1rem">🔄 Actualizar</button></div></div>
-    <div class="tab" id="t-diseno"><div class="card"><h2>🎨 Diseno del panel</h2>
+    <div class="tab" id="t-diseno"><div class="card"><h2>ℹ️ Version del sistema</h2><div id="changelog" style="font-size:.84rem;line-height:1.6;color:var(--mut)"></div></div><div class="card"><h2>🎨 Diseno del panel</h2>
       <p style="color:var(--mut);font-size:.85rem;margin-top:0">Personaliza colores y tipografias. Se aplica al panel publico y al admin.</p>
       <div class="row"><div><label>Color primario</label><input id="th_acc" type="color" value="#0ea5e9"></div><div><label>Color secundario</label><input id="th_acc2" type="color" value="#6366f1"></div><div><label>Fondo</label><input id="th_bg" type="color" value="#f4f7fb"></div><div><label>Panel</label><input id="th_panel" type="color" value="#ffffff"></div></div>
       <div class="row"><div><label>Fuente titulos</label><select id="th_fh"><option>Space Grotesk</option><option>Inter</option><option>Georgia</option><option>system-ui</option><option>monospace</option></select></div><div><label>Fuente cuerpo</label><select id="th_fb"><option>Inter</option><option>Space Grotesk</option><option>Georgia</option><option>system-ui</option><option>monospace</option></select></div></div>
@@ -2166,7 +2169,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null,editPL=null,editPR=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria',diseno:'Diseno del panel'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg'){loadConfig();loadSmtpLog();}if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='cola'){loadCola();histTimer=setInterval(loadCola,4000);}if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();if(id==='diseno')loadTheme();}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria',diseno:'Diseno del panel'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg'){loadConfig();loadSmtpLog();}if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='cola'){loadCola();histTimer=setInterval(loadCola,4000);}if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();if(id==='diseno'){loadTheme();loadChangelog();}}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -2268,7 +2271,10 @@ async function delProgramado(id){if(confirm('Eliminar envio programado?')){await
 let curLogType='api';async function loadLogs(tipo){curLogType=tipo;const r=await api('GET','/api/logs?tipo='+tipo+'&limit=300');document.getElementById('log_out').textContent=(r.lineas||[]).join('\n')||'(log vacio o inexistente)';}
 // Auditoria
 async function loadAud(){const r=await api('GET','/api/auditoria?limit=200');document.getElementById('tb_aud').innerHTML=(r.rows||[]).map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.usuario||''}</td><td>${x.accion||''}</td><td>${x.entidad||''}</td><td>${x.entidad_id||''}</td><td>${(x.detalle||'').slice(0,50)}</td><td>${x.ip||''}</td></tr>`).join('')||`<tr><td colspan="7" style="color:var(--mut);text-align:center;padding:1rem">Sin registros de auditoria</td></tr>`;}
-checkTok();applyTheme();health();setInterval(health,20000);
+checkTok();applyTheme();health();setInterval(health,20000);loadVersion();
+const CHANGELOG=[['1.0','Version inicial: panel publico y admin, cola de envios, envios programados, plantillas, dashboard, visor de logs, auditoria, modulo de diseno, gestion PBX, backups por email y sistema de versiones.']];
+function loadChangelog(){const el=document.getElementById('changelog');if(el)el.innerHTML=CHANGELOG.map(([v,t])=>`<div style="margin-bottom:.6rem"><b style="color:var(--acc)">v${v}</b><br>${t}</div>`).join('');}
+async function loadVersion(){try{const v=await fetch('/api/version').then(r=>r.json());const el=document.getElementById('ver');if(el)el.textContent='v'+(v.version||'1.0');}catch(e){}}
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
@@ -2350,6 +2356,7 @@ import sqlite3
 c = sqlite3.connect('${APP_DIR}/database/pocsag.db')
 c.execute('INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)', ('admin_user','admin'))
 c.execute('INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)', ('admin_pass','admin123'))
+c.execute('INSERT OR REPLACE INTO config(clave,valor) VALUES(?,?)', ('version','${VERSION}'))
 c.commit(); c.close()
 "
 chmod 640 "${APP_DIR}/database/pocsag.db" 2>/dev/null || true
@@ -2448,6 +2455,7 @@ else
 fi
 cat <<EOF
 
+  VERSION: ${VERSION}
   MODO: Asterisk nativo
   Panel publico (enviar + historial):  http://<servidor>:8080/
   Panel admin (gestion completa):       http://<servidor>:8080/admin
