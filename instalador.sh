@@ -2,9 +2,8 @@
 # ============================================================================
 # instalador.sh  -  Sistema de Paginacion Hospitalaria POCSAG sobre VoIP
 # ============================================================================
-# Objetivo: PBX con FreePBX 17 + sistema POCSAG integrado, en Ubuntu 22.04.
+# Objetivo: PBX Asterisk + sistema POCSAG integrado, en Ubuntu 22.04.
 # Uso:    sudo bash instalador.sh
-# Forzar instalacion de FreePBX 17 (best-effort): sudo INSTALL_FREEPBX=1 bash instalador.sh
 # Quita:  sudo /opt/pocsag-server/bin/uninstall.sh  (o --purge)
 # ============================================================================
 set -euo pipefail
@@ -45,7 +44,7 @@ if [[ $RESET -eq 1 ]]; then
 elif [[ $UPDATE -eq 1 ]]; then
   echo "==> ACTUALIZACION RAPIDA (modo --update) en ${APP_DIR}"
 else
-  echo "==> Instalando sistema POCSAG + FreePBX en ${APP_DIR}"
+  echo "==> Instalando sistema POCSAG + Asterisk en ${APP_DIR}"
 fi
 
 # ============================ 1. DEPENDENCIAS ================================
@@ -71,49 +70,8 @@ AST_ETC="/etc/asterisk"
 mkdir -p /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds
 chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/agi-bin 2>/dev/null || true
 
-# ============================ 3. FREEPBX (opcional) ==========================
-FREEPBX=0
-instalar_freepbx(){
-  echo "==> Instalando FreePBX 17 (puede tardar varios minutos)..."
-  apt-get install -y mariadb-server apache2 libapache2-mod-php8.1 \
-    php8.1 php8.1-cli php8.1-mysql php8.1-gd php8.1-mbstring php8.1-curl \
-    php8.1-xml php8.1-zip php8.1-intl php8.1-bcmath php8.1-sqlite3 \
-    php8.1-soap php8.1-ldap php8.1-imap php-pear nodejs \
-    || { warn "No se pudieron instalar dependencias de FreePBX"; return 1; }
-  systemctl enable --now mariadb 2>/dev/null || true
-  systemctl enable --now apache2 2>/dev/null || true
-  sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf 2>/dev/null || true
-  sed -i 's/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf 2>/dev/null || true
-  a2enmod rewrite 2>/dev/null || true
-  systemctl restart apache2 2>/dev/null || true
-  cd /tmp
-  rm -rf freepbx freepbx-17.0-latest.tgz
-  if ! wget -q "http://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0-latest.tgz"; then
-    warn "No se pudo descargar FreePBX"; return 1
-  fi
-  tar xzf freepbx-17.0-latest.tgz
-  cd freepbx
-  systemctl start asterisk 2>/dev/null || true
-  if ! ./install -n --dbuser root 2>/tmp/freepbx_install.err; then
-    warn "FreePBX install fallo (ver /tmp/freepbx_install.err). Se continua con Asterisk nativo."
-    return 1
-  fi
-  fwconsole ma installall 2>/dev/null || true
-  fwconsole reload 2>/dev/null || true
-  return 0
-}
-echo "==> 3/10 FreePBX..."
-if command -v fwconsole >/dev/null 2>&1; then
-  log "FreePBX detectado."; FREEPBX=1
-fi
-if [[ $UPDATE -eq 0 ]]; then
-  if [[ "$FREEPBX" -eq 0 && "${INSTALL_FREEPBX:-0}" == "1" ]]; then
-    if instalar_freepbx; then FREEPBX=1; log "FreePBX instalado."; else warn "FreePBX no disponible. Integrando con Asterisk nativo."; fi
-  elif [[ "$FREEPBX" -eq 0 ]]; then
-    warn "FreePBX no detectado. Se integra con Asterisk nativo."
-    warn "Para instalar FreePBX 17: sudo INSTALL_FREEPBX=1 bash instalador.sh  (o sigue los pasos al final)"
-  fi
-fi
+# ============================ 3. (solo Asterisk nativo) ====================
+echo "==> 3/10 (omitido - solo Asterisk nativo)"
 
 # ============================ 4. ESTRUCTURA =================================
 echo "==> 4/10 Estructura..."
@@ -507,7 +465,7 @@ exten => 2184,1,NoOp(=== Paginacion hospitalaria POCSAG ===)
  same => n,Playback(beep)
  same => n,Read(CODE,,8,,3,5)
  same => n,GotoIf($["${CODE}" = ""]?fin)
- same => n,AGI(pocsag_check.py,${CODE})
+ same => n,AGI(/var/lib/asterisk/agi-bin/pocsag_check.py,${CODE})
  same => n,GotoIf($["${POCSAG_VALID}" = "1"]?pedir_mensaje:codigo_invalido)
  same => n(codigo_invalido),Playback(codigo-inexistente)
  same => n,Playback(marque-otro-codigo)
@@ -517,7 +475,7 @@ exten => 2184,1,NoOp(=== Paginacion hospitalaria POCSAG ===)
  same => n,Playback(beep)
  same => n,Read(MESSAGE,,16,,3,${POCSAG_MSJ_TIMEOUT})
  same => n,GotoIf($["${MESSAGE}" = ""]?mensaje_vacio:enviar)
- same => n(enviar),AGI(pocsag_handler.py,${CALLERID(num)},${CODE},${MESSAGE})
+ same => n(enviar),AGI(/var/lib/asterisk/agi-bin/pocsag_handler.py,${CALLERID(num)},${CODE},${MESSAGE})
  same => n,GotoIf($["${AGISTATUS}" = "SUCCESS"]?ok:fail)
  same => n(ok),Playback(confirmado)
  same => n,Hangup()
@@ -829,7 +787,7 @@ cat > "${APP_DIR}/scripts/healthcheck.sh" <<'EOF'
 set -euo pipefail
 ok=1
 check(){ if systemctl is-active --quiet "$1"; then echo "[OK]   $1"; else echo "[FAIL] $1"; ok=0; fi; }
-command -v fwconsole >/dev/null && echo "[OK]   FreePBX (fwconsole)" || echo "[INFO] Asterisk nativo"
+echo "[OK]   Asterisk nativo"
 if asterisk -rx "core show uptime" >/dev/null 2>&1; then echo "[OK]   asterisk"; else echo "[FAIL] asterisk"; ok=0; fi
 check pocsag-api 2>/dev/null||true
 command -v aplay>/dev/null&&echo "[OK]   aplay"||{ echo "[FAIL] aplay"; ok=0; }
@@ -880,7 +838,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'while true; do if ! asterisk -rx "core show uptime" >/dev/null 2>&1; then if command -v fwconsole >/dev/null; then fwconsole start; else systemctl restart asterisk; fi; fi; /opt/pocsag-server/scripts/healthcheck.sh >> /opt/pocsag-server/logs/health.log 2>&1; sleep 30; done'
+ExecStart=/bin/bash -lc 'while true; do if ! asterisk -rx "core show uptime" >/dev/null 2>&1; then systemctl restart asterisk; fi; /opt/pocsag-server/scripts/healthcheck.sh >> /opt/pocsag-server/logs/health.log 2>&1; sleep 30; done'
 Restart=always
 RestartSec=10
 
@@ -891,9 +849,9 @@ EOF
 # --- backend/app.py ---
 cat > "${APP_DIR}/backend/app.py" <<'EOF'
 #!/usr/bin/env python3
-import os, sys, json, csv, io, subprocess, shutil, tempfile
+import os, sys, json, csv, io, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 sys.path.insert(0, "/opt/pocsag-server")
 from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actualizar_pager, borrar_pager,
     toggle_pager, importar_pagers,
@@ -904,7 +862,6 @@ from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actu
 HOST=os.environ.get("POCSAG_API_HOST","0.0.0.0")
 PORT=int(os.environ.get("POCSAG_API_PORT","8080"))
 FRONT="/opt/pocsag-server/frontend"
-HAS_FWCONSOLE = shutil.which("fwconsole") is not None
 
 def jr(h,d,c=200):
     b=json.dumps(d,ensure_ascii=False).encode()
@@ -981,7 +938,7 @@ class H(BaseHTTPRequestHandler):
         u=urlparse(self.path); p=u.path; q=parse_qs(u.query)
         if p in ("/","/index.html"): return self.serve_file("index.html","text/html; charset=utf-8")
         if p in ("/admin","/admin.html"): return self.serve_file("admin.html","text/html; charset=utf-8")
-        if p=="/api/health": return jr(self,{"status":"ok","freepbx":HAS_FWCONSOLE})
+        if p=="/api/health": return jr(self,{"status":"ok"})
         if p=="/api/pagers":
             qq=q.get("q",[""])[0]; return jr(self,buscar_pagers(qq) if qq else listar_pagers())
         if p=="/api/grupos":
@@ -1033,7 +990,7 @@ class H(BaseHTTPRequestHandler):
             if p=="/api/pagers/import":
                 if not self._guard(): return
                 ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
-                rows,err=parse_import(body,self.headers.get("X-Filename",""))
+                rows,err=parse_import(body,unquote(self.headers.get("X-Filename","")))
                 if err: return jr(self,{"error":err},400)
                 return jr(self, importar_pagers(rows))
             if p=="/api/extensions":
@@ -1041,19 +998,15 @@ class H(BaseHTTPRequestHandler):
                 return jr(self,{"id":crear_extension(read_body(self))})
             if p=="/api/extensions/aplicar":
                 if not self._guard(): return
-                if HAS_FWCONSOLE:
-                    return jr(self,{"salida":"Modo FreePBX: gestione las extensiones desde el panel FreePBX (Applications -> Extensions)."})
                 if not generar_pjsip_conf(): return jr(self,{"error":"no se pudo escribir /etc/asterisk/pjsip_pocsag.conf (permisos)"},400)
                 return jr(self,{"salida":"Configuracion PJSIP regenerada y recargada.\n"+ast_run("pjsip reload")})
             if p=="/api/pbx/reload":
                 if not self._guard(): return
-                if HAS_FWCONSOLE: out=run_cmd(["fwconsole","reload"],timeout=60)
-                else: out=ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")
+                out=ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")
                 return jr(self,{"salida":out})
             if p=="/api/pbx/restart":
                 if not self._guard(): return
-                if HAS_FWCONSOLE: out=run_cmd(["fwconsole","restart"],timeout=90)
-                else: out=ast_run("core restart now")
+                out=ast_run("core restart now")
                 return jr(self,{"salida":out})
             self.send_response(404); self.end_headers()
         except Exception as e: return jr(self,{"error":str(e)},400)
@@ -1094,7 +1047,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 
 if __name__=="__main__":
-    print(f"API POCSAG en http://{HOST}:{PORT} (FreePBX={'si' if HAS_FWCONSOLE else 'no'})")
+    print(f"API POCSAG en http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST,PORT),H).serve_forever()
 EOF
 mkx "${APP_DIR}/backend/app.py"
@@ -1348,7 +1301,6 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap"><button class="btn btn-pri" id="impbtn" onclick="doImport()" disabled>Importar</button><a class="btn btn-sec" href="data:text/csv;base64,Y29kaWdvLGNhcF9jb2RlLG5vbWJyZSxhcGVsbGlkbyxhcmVhLGJhdWRpb3MsZGVzY3JpcGNpb24KMTAsMDAwMjAyMCxKdWFuLFBlcmV6LEd1YXJkaWEgTWVkaWNhLDEyMDAsTWVkaWNvIGRlIGd1YXJkaWEK" download="plantilla_pagers.csv">Descargar plantilla</a></div>
       <div id="imp_res" class="toast"></div></div></div>
     <div class="tab" id="t-ext"><div class="card"><h2><span>☎ Extensiones Asterisk</span><button class="btn btn-pri btn-sm" onclick="openExt()">+ Nueva extension</button></h2>
-      <p style="color:var(--mut);font-size:.82rem;margin-top:-.5rem">Solo modo Asterisk nativo. En FreePBX gestione desde su panel.</p>
       <div style="display:flex;gap:.6rem;margin-bottom:.8rem"><button class="btn btn-warn btn-sm" onclick="aplicarExt()">Aplicar a Asterisk</button></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Numero</th><th>Clave</th><th>Contexto</th><th>Descripcion</th><th>Activo</th><th></th></tr></thead><tbody id="tb_ext"></tbody></table></div></div></div>
     <div class="tab" id="t-hist"><div class="card"><h2>🕘 Historial de mensajes</h2>
@@ -1417,7 +1369,7 @@ ifile.addEventListener('change',e=>{impFile=e.target.files[0];dftxt.textContent=
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
 drop.addEventListener('drop',e=>{impFile=e.dataTransfer.files[0];dftxt.textContent=impFile.name;document.getElementById('impbtn').disabled=false;});
-async function doImport(){if(!impFile)return;const buf=await impFile.arrayBuffer();const r=await api('POST','/api/pagers/import',buf,true);const t=document.getElementById('imp_res');t.className='toast show '+(r.error?'err':'ok');t.textContent=r.error?('Error: '+r.error):`Importados: ${r.importados} · Errores: ${r.errores}`;if(!r.error){loadPagers();}}
+async function doImport(){if(!impFile)return;const buf=await impFile.arrayBuffer();const r=await fetch('/api/pagers/import',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'X-Filename':encodeURIComponent(impFile.name)},body:buf}).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});const t=document.getElementById('imp_res');t.className='toast show '+(r.error?'err':'ok');t.textContent=r.error?('Error: '+r.error):`Importados: ${r.importados} · Errores: ${r.errores}`;if(!r.error){loadPagers();}}
 // Extensiones
 async function loadExt(){const r=await api('GET','/api/extensions');document.getElementById('tb_ext').innerHTML=(r||[]).map(x=>`<tr><td>${x.numero}</td><td>${'*'.repeat((x.password||'').length||4)}</td><td>${x.contexto||''}</td><td>${x.descripcion||''}</td><td><button class="sw ${x.activo?'on':''}" onclick="toggleX(${x.id},${x.activo?0:1})"></button></td><td><button class="btn btn-sec btn-sm" onclick="openExt(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delX(${x.id})">✕</button></td></tr>`).join('')||`<tr><td colspan="6" style="color:var(--mut);text-align:center;padding:1rem">Sin extensiones</td></tr>`;}
 async function toggleX(id,act){const r=await api('GET','/api/extensions');const x=(r||[]).find(i=>i.id===id);if(x)await api('PUT','/api/extensiones/'+id,{...x,activo:act});loadExt();}
@@ -1456,14 +1408,10 @@ systemctl daemon-reload
 rm -f /etc/asterisk/extensions_pocsag.conf /etc/asterisk/pjsip_pocsag.conf
 rm -f /var/lib/asterisk/agi-bin/pocsag_handler.py /var/lib/asterisk/agi-bin/pocsag_check.py
 rm -f /etc/logrotate.d/pocsag
-# limpia bloque POCSAG de extensions_custom.conf (FreePBX)
-if [[ -f /etc/asterisk/extensions_custom.conf ]]; then
-  sed -i '/; ===== POCSAG pocsag-server/,/; ===== FIN POCSAG =====/d' /etc/asterisk/extensions_custom.conf
-fi
-command -v fwconsole >/dev/null && fwconsole reload 2>/dev/null||true
+asterisk -rx "dialplan reload" 2>/dev/null||true
 if [[ $PURGE -eq 1 ]]; then rm -rf "$APP"; rm -f /var/log/pocsag-install.log
 else cp "$APP/database/pocsag.db" /tmp/pocsag-backup.db 2>/dev/null||true; rm -rf "$APP"; fi
-echo "Desinstalacion completa (FreePBX/Asterisk NO se quitan)."
+echo "Desinstalacion completa (Asterisk NO se quita)."
 EOF
 mkx "${APP_DIR}/bin/uninstall.sh"
 
@@ -1491,25 +1439,11 @@ mkx /var/lib/asterisk/agi-bin/pocsag_check.py
 chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/agi-bin 2>/dev/null || true
 
 ivr_file="${APP_DIR}/asterisk/pocsag_ivr.conf"
-if [[ "$FREEPBX" == "1" ]]; then
-  custom="/etc/asterisk/extensions_custom.conf"
-  touch "$custom"
-  sed -i '/; ===== POCSAG pocsag-server/,/; ===== FIN POCSAG =====/d' "$custom"
-  { echo "; ===== POCSAG pocsag-server (no editar entre marcadores) ====="
-    echo "[from-internal-custom]"
-    echo "exten => 2184,1,NoOp(POCSAG paging)"
-    echo " same => n,Goto(pocsag-incoming,2184,1)"
-    echo ""
-    cat "$ivr_file"
-    echo "; ===== FIN POCSAG ====="; } >> "$custom"
-  log "Dialplan integrado en extensions_custom.conf (FreePBX)."
-else
-  cp "$ivr_file" "${AST_ETC}/extensions_pocsag.conf"
-  grep -q 'extensions_pocsag.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_pocsag.conf' >> "${AST_ETC}/extensions.conf"
-  cp "${APP_DIR}/asterisk/pjsip_pocsag.conf" "${AST_ETC}/"
-  grep -q 'pjsip_pocsag.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_pocsag.conf' >> "${AST_ETC}/pjsip.conf"
-  log "Dialplan + endpoint 101 integrados (Asterisk nativo)."
-fi
+cp "$ivr_file" "${AST_ETC}/extensions_pocsag.conf"
+grep -q 'extensions_pocsag.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_pocsag.conf' >> "${AST_ETC}/extensions.conf"
+cp "${APP_DIR}/asterisk/pjsip_pocsag.conf" "${AST_ETC}/"
+grep -q 'pjsip_pocsag.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_pocsag.conf' >> "${AST_ETC}/pjsip.conf"
+log "Dialplan + endpoint 101 integrados (Asterisk nativo)."
 
 # ============================ 8. LOCUCIONES ===============================
 echo "==> 8/10 Locuciones IVR..."
@@ -1544,15 +1478,9 @@ cat > /etc/cron.d/pocsag-cleanup <<'EOF'
 EOF
 chmod 644 /etc/cron.d/pocsag-cleanup
 systemctl daemon-reload
-if [[ "$FREEPBX" == "1" ]]; then
-  systemctl disable --now asterisk 2>/dev/null || true
-  fwconsole start 2>/dev/null || warn "fwconsole start fallo"
-  fwconsole reload 2>/dev/null || true
-else
-  systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
-  asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
-  asterisk -rx "pjsip reload" 2>/dev/null || true
-fi
+systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
+asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
+asterisk -rx "pjsip reload" 2>/dev/null || true
 systemctl daemon-reload
 systemctl restart pocsag-api 2>/dev/null || warn "API no pudo reiniciarse"
 systemctl enable pocsag-api 2>/dev/null || true
@@ -1581,21 +1509,12 @@ else
 fi
 cat <<EOF
 
-  MODO: $([ "$FREEPBX" = "1" ] && echo "FreePBX" || echo "Asterisk nativo")
+  MODO: Asterisk nativo
   Panel publico (enviar + historial):  http://<servidor>:8080/
   Panel admin (gestion completa):       http://<servidor>:8080/admin
     Login por defecto: usuario=admin  clave=admin123  (CAMBIAR en Parametros)
-  FreePBX (si aplica): http://<servidor>/    (admin por navegador)
 
 PRUEBAS (Zoiper -> 101 -> 2184):
-
-  SI tenes FreePBX:
-    1) Entra al panel FreePBX (http://<servidor>/) -> Applications -> Extensions
-    2) Add Extension (SIP/PJSIP) numero 101, pone un secret y guardas -> Apply Config
-    3) En Zoiper: usuario 101, ese secret, host <servidor>:5060, UDP
-    4) Marcas 2184 -> te atiende la IVR: codigo (ej 10) -> mensaje -> "Mensaje enviado"
-
-  SI estas en Asterisk nativo:
     1) Edita /etc/asterisk/pjsip_pocsag.conf y cambia CAMBIAR_PASSWORD_101
     2) asterisk -rx "pjsip reload"
     3) Zoiper: usuario 101, esa clave, host <servidor>:5060, UDP
@@ -1606,7 +1525,6 @@ PRUEBAS (Zoiper -> 101 -> 2184):
 
   Bitacora: sqlite3 /opt/pocsag-server/database/pocsag.db "SELECT * FROM bitacora ORDER BY id DESC LIMIT 5;"
 
-  FreePBX no instalado? Ejecuta:  sudo INSTALL_FREEPBX=1 bash instalador.sh
   Reinstalar desde cero (backup automatico de la base): sudo bash instalador.sh --reset
   Desinstalar POCSAG: sudo /opt/pocsag-server/bin/uninstall.sh
 EOF
