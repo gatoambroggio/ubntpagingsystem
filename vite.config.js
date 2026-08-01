@@ -2,20 +2,29 @@ import base44 from "@base44/vite-plugin"
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import fs from 'node:fs'
+import path from 'node:path'
 
-// Handle ?raw imports of non-JS files (.sh, .py, .html, .sql, .conf, ...)
-// at the load hook so the base44 plugin doesn't try to parse them as JS.
+// Resolve + load non-JS text files (.sh, .py, .html, .sql, ...) imported via the
+// @/ alias so the base44 plugin never gets to parse them as JavaScript.
 function rawTextFallback() {
   const nonJs = ['sh','py','html','txt','sql','conf','ini','toml','yaml','yml','c','h','service','md']
+  const root = process.cwd()
+  const extOf = (p) => p.split('.').pop()?.toLowerCase()
   return {
     name: 'raw-text-fallback',
     enforce: 'pre',
+    resolveId(source) {
+      if (!source || !source.startsWith('@/')) return null
+      const stripped = source.replace(/[?#].*$/, '')
+      const abs = path.resolve(root, 'src', stripped.slice(3))
+      if (!nonJs.includes(extOf(abs))) return null
+      return abs
+    },
     load(id) {
       if (!id) return null
-      const filePath = id.split('?raw')[0].replace(/[?#].*$/, '')
+      const filePath = id.replace(/[?#].*$/, '')
       if (filePath.endsWith('/index.html')) return null
-      const ext = filePath.split('.').pop()?.toLowerCase()
-      if (!ext || !nonJs.includes(ext)) return null
+      if (!nonJs.includes(extOf(filePath))) return null
       try {
         const content = fs.readFileSync(filePath, 'utf-8')
         return `export default ${JSON.stringify(content)}`
