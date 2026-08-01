@@ -16,10 +16,10 @@ function rawTextFallback() {
     buildStart() {
       try {
         const src = path.resolve(root, 'instalador.sh')
-        const destDir = path.resolve(root, 'public')
         if (!fs.existsSync(src)) return
-        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
-        fs.copyFileSync(src, path.resolve(destDir, 'instalador.sh'))
+        const content = fs.readFileSync(src, 'utf-8')
+        const out = `// AUTO-GENERADO por vite.config.js buildStart. No editar a mano.\nexport default ${JSON.stringify(content)};\n`
+        fs.writeFileSync(path.resolve(root, 'src', '_instaladorContent.js'), out)
       } catch {}
     },
     resolveId(source) {
