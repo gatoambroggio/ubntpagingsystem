@@ -184,7 +184,8 @@ CREATE TABLE IF NOT EXISTS cola_envios (
   origen TEXT DEFAULT 'web',
   estado TEXT DEFAULT 'pendiente',
   intentos INTEGER DEFAULT 0,
-  observaciones TEXT
+  observaciones TEXT,
+  proximo_intento DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_envios(estado);
 CREATE INDEX IF NOT EXISTS idx_cola_fecha ON cola_envios(fecha_encola);
@@ -291,6 +292,8 @@ def init_db(db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         with open(os.path.join(base,"schema.sql"),encoding="utf-8") as f: conn.executescript(f.read())
         with open(os.path.join(base,"seed.sql"),encoding="utf-8") as f: conn.executescript(f.read())
+        try: conn.execute("ALTER TABLE cola_envios ADD COLUMN proximo_intento DATETIME")
+        except Exception: pass
 
 def get_config(clave, default="", db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -601,7 +604,7 @@ def estado_cola(db_path=DEFAULT_DB):
 
 def reintentar_cola(cid, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
-        conn.execute("UPDATE cola_envios SET estado='pendiente', intentos=0, observaciones='' WHERE id=? AND estado='error'",(cid,))
+        conn.execute("UPDATE cola_envios SET estado='pendiente', intentos=0, observaciones='', proximo_intento=NULL WHERE id=? AND estado IN ('error','fallido')",(cid,))
 
 def limpiar_cola(db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -612,7 +615,7 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
     handler="/var/lib/asterisk/agi-bin/pocsag_handler.py"
     if not os.path.exists(handler): handler="/opt/pocsag-server/agi/pocsag_handler.py"
     with get_conn(db_path) as conn:
-        row=conn.execute("SELECT * FROM cola_envios WHERE estado='pendiente' ORDER BY id ASC LIMIT 1").fetchone()
+        row=conn.execute("SELECT * FROM cola_envios WHERE estado='pendiente' AND (proximo_intento IS NULL OR proximo_intento <= datetime('now','localtime')) ORDER BY id ASC LIMIT 1").fetchone()
         if not row: return None
         conn.execute("UPDATE cola_envios SET estado='enviando', intentos=intentos+1 WHERE id=?",(row["id"],))
         conn.commit()
@@ -627,12 +630,18 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         ok=False; obs=str(e)[:200]
     with get_conn(db_path) as conn:
         if ok:
-            conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=datetime('now','localtime'), observaciones='' WHERE id=?",(item["id"],))
+            conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=datetime('now','localtime'), observaciones='', proximo_intento=NULL WHERE id=?",(item["id"],))
         else:
-            conn.execute("UPDATE cola_envios SET estado='error', fecha_procesado=datetime('now','localtime'), observaciones=? WHERE id=?",(obs,item["id"]))
+            intentos=item["intentos"]+1
+            if intentos < 3:
+                conn.execute("UPDATE cola_envios SET estado='pendiente', fecha_procesado=datetime('now','localtime'), observaciones=?, proximo_intento=datetime('now','localtime','+10 seconds') WHERE id=?",(obs,item["id"]))
+            else:
+                conn.execute("UPDATE cola_envios SET estado='fallido', fecha_procesado=datetime('now','localtime'), observaciones=?, proximo_intento=NULL WHERE id=?",(obs,item["id"]))
     if not ok:
-        try: notificar_error("Error de envio POCSAG", f"Cola id={item['id']} codigo={item['codigo']} fallo: {obs}")
-        except Exception: pass
+        intentos=item["intentos"]+1
+        if intentos >= 3:
+            try: notificar_error("Envio fallido POCSAG", f"Cola id={item['id']} codigo={item['codigo']} fallo tras 3 intentos: {obs}")
+            except Exception: pass
     return item["id"]
 
 def backup_db(db_path=DEFAULT_DB):
@@ -2126,11 +2135,11 @@ async function loadTheme(){const c=await api('GET','/api/config');['acc','acc2',
 async function saveTheme(){const d={theme_acc:document.getElementById('th_acc').value,theme_acc2:document.getElementById('th_acc2').value,theme_bg:document.getElementById('th_bg').value,theme_panel:document.getElementById('th_panel').value};await api('PUT','/api/config',d);applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Colores guardados';setTimeout(()=>t.className='toast',2500);}
 async function resetTheme(){await api('PUT','/api/config',{theme_acc:'#14b8a6',theme_acc2:'#0ea5e9',theme_bg:'#0b1220',theme_panel:'#111c30'});loadTheme();applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Valores restablecidos';setTimeout(()=>t.className='toast',2500);}
 // Cola
-async function loadCola(){try{const stats=await api('GET','/api/cola/estado');const items=await api('GET','/api/cola');const sd=document.getElementById('cola_stats');sd.innerHTML=Object.entries(stats||{}).map(([k,v])=>`<span class="badge ${k==='pendiente'?'mut':k==='enviado'?'ok':k==='error'?'err':'mut'}">${k}: ${v}</span>`).join('')||'<span class="badge mut">cola vacia</span>';const rows=items||[];document.getElementById('tb_cola').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.id}</td><td>${x.fecha_encola}</td><td>${x.codigo}</td><td>${(x.mensaje||'').slice(0,40)}</td><td>${x.origen||''}</td><td><span class="badge ${x.estado==='enviado'?'ok':x.estado==='error'?'err':'mut'}">${x.estado}</span></td><td>${x.intentos||0}</td><td>${(x.observaciones||'').slice(0,30)}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cola vacia</td></tr>`;}catch(e){}}
-async function colaReintentar(){if(!confirm('Reintentar todos los mensajes fallidos?'))return;const items=await api('GET','/api/cola?estado=error');for(const item of (items||[])){await api('POST','/api/cola/reintentar',{id:item.id});}loadCola();}
+async function loadCola(){try{const stats=await api('GET','/api/cola/estado');const items=await api('GET','/api/cola');const sd=document.getElementById('cola_stats');sd.innerHTML=Object.entries(stats||{}).map(([k,v])=>`<span class="badge ${k==='pendiente'?'mut':k==='enviado'?'ok':(k==='error'||k==='fallido')?'err':'mut'}">${k}: ${v}</span>`).join('')||'<span class="badge mut">cola vacia</span>';const rows=items||[];document.getElementById('tb_cola').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.id}</td><td>${x.fecha_encola}</td><td>${x.codigo}</td><td>${(x.mensaje||'').slice(0,40)}</td><td>${x.origen||''}</td><td><span class="badge ${x.estado==='enviado'?'ok':(x.estado==='error'||x.estado==='fallido')?'err':'mut'}">${x.estado}</span></td><td>${x.intentos||0}</td><td>${(x.observaciones||'').slice(0,30)}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cola vacia</td></tr>`;}catch(e){}}
+async function colaReintentar(){if(!confirm('Reintentar todos los mensajes fallidos?'))return;for(const est of ['fallido','error']){const items=await api('GET','/api/cola?estado='+est);for(const item of (items||[])){await api('POST','/api/cola/reintentar',{id:item.id});}}loadCola();}
 async function colaLimpiar(){if(!confirm('Eliminar todos los mensajes ya enviados de la cola?'))return;await api('POST','/api/cola/limpiar');loadCola();}
 // Base de datos
-async function dbBackup(){window.open('/api/db/backup','_blank');}
+async function dbBackup(){const r=await fetch('/api/db/backup',{headers:{'Authorization':'Bearer '+TOKEN}});if(r.status===401){logout(true);throw new Error('no autorizado');}const blob=await r.blob();const cd=r.headers.get('Content-Disposition')||'';const m=cd.match(/filename="?([^"]+)"?/);const name=m?m[1]:'pocsag_backup.db';const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(u);}
 async function dbBackupEmail(){const t=document.getElementById('db_res');t.className='toast show ok';t.textContent='Enviando backup por email...';const r=await api('POST','/api/db/backup-email',{});if(r.ok){t.className='toast show ok';t.textContent='Backup enviado por email.';}else{t.className='toast show err';t.textContent='Error: '+(r.error||'no se pudo enviar');}setTimeout(()=>t.className='toast',4000);}
 let dbFile=null;const dropDB=document.getElementById('dropDB'),ifileDB=document.getElementById('ifileDB'),dftxtDB=document.getElementById('dftxtDB');
 if(dropDB){dropDB.addEventListener('click',()=>ifileDB.click());ifileDB.addEventListener('change',e=>{dbFile=e.target.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});['dragover','dragenter'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.add('hover');}));['dragleave','drop'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.remove('hover');}));dropDB.addEventListener('drop',e=>{dbFile=e.dataTransfer.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});}
