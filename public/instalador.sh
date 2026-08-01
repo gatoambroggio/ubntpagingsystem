@@ -661,18 +661,26 @@ def restore_db(file_data, db_path=DEFAULT_DB):
     return bk
 
 def enviar_email(to, subject, body, attachment_path=None, db_path=DEFAULT_DB):
-    import smtplib
+    import smtplib, traceback, time
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.base import MIMEBase
     from email import encoders
+    SMTP_LOG="/opt/pocsag-server/logs/smtp.log"
+    try: os.makedirs(os.path.dirname(SMTP_LOG),exist_ok=True)
+    except: pass
+    def lg(m):
+        try:
+            with open(SMTP_LOG,"a") as f: f.write(time.strftime("%Y-%m-%d %H:%M:%S")+" | "+m+"\n")
+        except: pass
     host=get_config("smtp_host","",db_path)
-    if not host: return {"error":"SMTP no configurado"}
+    if not host: lg("ERROR no hay smtp_host configurado -> "+str(to)); return {"error":"SMTP no configurado"}
     port=int(get_config("smtp_port","587",db_path))
     user=get_config("smtp_user","",db_path)
     pwd=get_config("smtp_pass","",db_path)
     frm=get_config("smtp_from",user,db_path) or user
     secure=get_config("smtp_secure","tls",db_path)
+    lg("INICIO to="+str(to)+" subject="+str(subject)[:50]+" host="+str(host)+":"+str(port)+" secure="+str(secure)+" user="+str(user))
     msg=MIMEMultipart(); msg["From"]=frm; msg["To"]=to; msg["Subject"]=subject
     msg.attach(MIMEText(body,"plain","utf-8"))
     if attachment_path and os.path.exists(attachment_path):
@@ -681,20 +689,26 @@ def enviar_email(to, subject, body, attachment_path=None, db_path=DEFAULT_DB):
             part.add_header("Content-Disposition",f'attachment; filename="{os.path.basename(attachment_path)}"')
             msg.attach(part)
     try:
-        if secure=="ssl": server=smtplib.SMTP_SSL(host,port,timeout=30)
+        if secure=="ssl": server=smtplib.SMTP_SSL(host,port,timeout=30); lg("conectado SMTP_SSL OK")
         else:
-            server=smtplib.SMTP(host,port,timeout=30)
-            server.ehlo()
+            server=smtplib.SMTP(host,port,timeout=30); lg("conectado SMTP OK")
+            server.ehlo(); lg("ehlo OK")
             if secure=="tls":
-                server.starttls()
+                server.starttls(); lg("starttls OK")
                 server.ehlo()
-        if user: server.login(user,pwd)
-        server.sendmail(frm,[to],msg.as_string())
+        if user:
+            server.login(user,pwd); lg("login OK")
+        else:
+            lg("login omitido (sin usuario)")
+        server.sendmail(frm,[to],msg.as_string()); lg("sendmail OK")
         server.quit()
+        lg("OK enviado a "+str(to))
         return {"ok":True}
     except smtplib.SMTPAuthenticationError as e:
+        lg("ERROR auth: "+str(e))
         return {"error":f"Auth fallida - si usas Gmail crea una App Password: {e}"}
     except Exception as e:
+        lg("ERROR: "+str(e)+" | "+traceback.format_exc().replace(chr(10)," / "))
         return {"error":str(e)}
 
 def listar_plantillas(db_path=DEFAULT_DB):
@@ -1509,6 +1523,21 @@ class H(BaseHTTPRequestHandler):
         if p=="/api/config":
             if not self._guard(): return
             return jr(self, all_config())
+        if p=="/api/smtp/log":
+            if not self._guard(): return
+            try:
+                lf="/opt/pocsag-server/logs/smtp.log"
+                if os.path.exists(lf):
+                    lines=open(lf,encoding="utf-8",errors="ignore").read().splitlines()[-200:]
+                else: lines=[]
+                return jr(self, {"lines":lines})
+            except Exception as e: return jr(self,{"lines":[],"error":str(e)})
+        if p=="/api/smtp/log/clear":
+            if not self._guard(): return
+            try:
+                open("/opt/pocsag-server/logs/smtp.log","w").close()
+                return jr(self,{"ok":True})
+            except Exception as e: return jr(self,{"error":str(e)})
         if p=="/api/extensions":
             if not self._guard(): return
             return jr(self, listar_extensiones())
@@ -2000,7 +2029,17 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="row"><div><label>Usuario SMTP</label><input id="c_smtp_user"></div><div><label>Clave SMTP</label><input id="c_smtp_pass" type="password"></div></div>
       <div class="row"><div><label>Remitente (email from)</label><input id="c_smtp_from"></div><div><label>Seguridad</label><select id="c_smtp_secure"><option value="tls">TLS</option><option value="ssl">SSL</option><option value="none">Ninguna</option></select></div></div>
       <div class="row"><div><label>Email para recibir backups</label><input id="c_backup_email"></div></div>
-      <button class="btn btn-sec" onclick="smtpTest()">Probar SMTP</button></div></div></div>
+      <button class="btn btn-sec" onclick="smtpTest()">Probar SMTP</button>
+      <div style="margin-top:1rem;border-top:1px solid var(--line);padding-top:.8rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
+          <b style="font-size:.85rem">📜 Log SMTP (diagnostico en tiempo real)</b>
+          <div style="display:flex;gap:.4rem">
+            <button class="btn btn-sec btn-sm" onclick="loadSmtpLog()">Actualizar</button>
+            <button class="btn btn-sec btn-sm" onclick="clearSmtpLog()">Limpiar</button>
+          </div>
+        </div>
+        <pre id="smtp_log" style="max-height:260px;font-size:.72rem;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:.8rem;overflow:auto">- sin registros todavia. Presiona "Probar SMTP" para generar actividad. -</pre>
+      </div></div></div>
     <div class="tab" id="t-pbx"><div class="card"><h2>🔀 Gestion del PBX</h2>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"><button class="btn btn-sec btn-sm" onclick="pbx('status')">Estado</button><button class="btn btn-sec btn-sm" onclick="pbx('peers')">Endpoints</button><button class="btn btn-sec btn-sm" onclick="pbx('channels')">Canales</button><button class="btn btn-sec btn-sm" onclick="pbx('uptime')">Uptime</button><button class="btn btn-warn btn-sm" onclick="pbxReload()">Recargar config</button><button class="btn btn-del btn-sm" onclick="pbxRestart()">Reiniciar PBX</button></div>
       <pre id="pbx_out">—</pre></div></div>
@@ -2074,7 +2113,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null,editPL=null,editPR=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='cola'){loadCola();histTimer=setInterval(loadCola,4000);}if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',cola:'Cola de envios',bd:'Base de datos',dash:'Dashboard',plantillas:'Plantillas',programados:'Envios programados',logs:'Logs del servidor',aud:'Auditoria'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg'){loadConfig();loadSmtpLog();}if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='cola'){loadCola();histTimer=setInterval(loadCola,4000);}if(id==='bd')loadBD();if(id==='enviar')initSend();if(id==='dash')loadDash();if(id==='plantillas')loadPlantillas();if(id==='programados')loadProgramados();if(id==='logs')loadLogs('api');if(id==='aud')loadAud();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -2150,7 +2189,9 @@ if(dropDB){dropDB.addEventListener('click',()=>ifileDB.click());ifileDB.addEvent
 async function dbRestore(){if(!dbFile)return;if(!confirm('ATENCION: Esto reemplaza la base de datos actual. Asegurese de tener un backup. Continuar?'))return;const buf=await dbFile.arrayBuffer();const t=document.getElementById('db_res');t.className='toast show ok';t.textContent='Restaurando...';const r=await fetch('/api/db/restore',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN},body:buf}).then(r=>r.json());if(r.ok){t.className='toast show ok';t.textContent='Base restaurada. Backup previo: '+r.backup;}else{t.className='toast show err';t.textContent='Error: '+(r.error||'no se pudo restaurar');}}
 function loadBD(){}
 // SMTP
-async function smtpTest(){const def=(document.getElementById('c_backup_email')||{}).value||'';const email=prompt('Email destino para la prueba:',def);if(!email)return;const t=document.getElementById('cfg_res');t.className='toast';t.textContent='Probando SMTP...';t.className='toast show';try{const r=await api('POST','/api/smtp/test',{email:email});if(r&&r.ok){t.className='toast show ok';t.textContent='Email de prueba enviado a '+email+'. Revisa bandeja y spam.';}else{let m=(r&&r.error)||'no se pudo enviar';if(/auth|login|password|535|534/i.test(m))m+=' -- Si usas Gmail crea una App Password (no sirve la clave comun).';t.className='toast show err';t.textContent='Error: '+m;}}catch(e){t.className='toast show err';t.textContent='Error: '+e;}}
+async function smtpTest(){const def=(document.getElementById('c_backup_email')||{}).value||'';const email=prompt('Email destino para la prueba:',def);if(!email)return;const t=document.getElementById('cfg_res');t.className='toast';t.textContent='Probando SMTP...';t.className='toast show';try{const r=await api('POST','/api/smtp/test',{email:email});if(r&&r.ok){t.className='toast show ok';t.textContent='Email de prueba enviado a '+email+'. Revisa bandeja y spam.';}else{let m=(r&&r.error)||'no se pudo enviar';if(/auth|login|password|535|534/i.test(m))m+=' -- Si usas Gmail crea una App Password (no sirve la clave comun).';t.className='toast show err';t.textContent='Error: '+m;}}catch(e){t.className='toast show err';t.textContent='Error: '+e;}loadSmtpLog();}
+async function loadSmtpLog(){const p=document.getElementById('smtp_log');if(!p)return;try{const r=await api('GET','/api/smtp/log');p.textContent=(r.lines&&r.lines.length)?r.lines.join('\n'):'- sin registros todavia -';p.scrollTop=p.scrollHeight;}catch(e){p.textContent='Error: '+e;}}
+async function clearSmtpLog(){if(!confirm('Limpiar el log SMTP?'))return;await api('GET','/api/smtp/log/clear');loadSmtpLog();}
 // PBX
 async function pbx(cmd){const r=await api('GET','/api/pbx?cmd='+cmd);document.getElementById('pbx_out').textContent=r.salida||r.error||'';}
 async function pbxReload(){if(!confirm('Recargar configuracion del PBX?'))return;const r=await api('POST','/api/pbx/reload');document.getElementById('pbx_out').textContent=r.salida||'';}
