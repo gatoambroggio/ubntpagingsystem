@@ -13,6 +13,15 @@ function rawTextFallback() {
   return {
     name: 'raw-text-fallback',
     enforce: 'pre',
+    buildStart() {
+      try {
+        const src = path.resolve(root, 'instalador.sh')
+        const destDir = path.resolve(root, 'public')
+        if (!fs.existsSync(src)) return
+        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
+        fs.copyFileSync(src, path.resolve(destDir, 'instalador.sh'))
+      } catch {}
+    },
     resolveId(source) {
       if (!source || !source.startsWith('@/')) return null
       const stripped = source.replace(/[?#].*$/, '')
