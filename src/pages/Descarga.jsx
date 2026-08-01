@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import JSZip from "jszip";
+import instaladorContent from "@/../instalador.sh?raw";
 
 // Carga el contenido de los archivos web de src/ en build-time.
 // Los .py/.sh/.html/.sql del pocsag-server ya van embebidos dentro de instalador.sh.
@@ -8,14 +9,6 @@ const srcFiles = import.meta.glob("/src/**/*.{js,jsx,ts,tsx,json,css,md}", {
   import: "default",
   eager: true,
 });
-
-// instalador.sh va embebido en el zip; se carga como texto plano (?raw).
-const instaladorFiles = import.meta.glob("/instalador.sh", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
-const instaladorContent = instaladorFiles["/instalador.sh"] || "";
 
 export default function Descarga() {
   const [busy, setBusy] = useState(false);
