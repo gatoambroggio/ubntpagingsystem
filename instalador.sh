@@ -173,6 +173,21 @@ CREATE INDEX IF NOT EXISTS idx_pagers_apellido ON pagers(apellido);
 CREATE INDEX IF NOT EXISTS idx_pagers_area ON pagers(area);
 CREATE INDEX IF NOT EXISTS idx_grupos_codigo ON grupos(codigo);
 CREATE INDEX IF NOT EXISTS idx_extensiones_numero ON extensiones(numero);
+CREATE TABLE IF NOT EXISTS cola_envios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fecha_encola DATETIME DEFAULT CURRENT_TIMESTAMP,
+  fecha_procesado DATETIME,
+  codigo TEXT NOT NULL,
+  cap_code TEXT,
+  mensaje TEXT,
+  baudios INTEGER,
+  origen TEXT DEFAULT 'web',
+  estado TEXT DEFAULT 'pendiente',
+  intentos INTEGER DEFAULT 0,
+  observaciones TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_envios(estado);
+CREATE INDEX IF NOT EXISTS idx_cola_fecha ON cola_envios(fecha_encola);
 EOF
 
 # --- database/seed.sql ---
@@ -185,7 +200,14 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('max_grupo_capcodes','20'),
  ('test_mode','1'),
  ('admin_user','admin'),
- ('admin_pass','admin123');
+ ('admin_pass','admin123'),
+ ('smtp_host',''),
+ ('smtp_port','587'),
+ ('smtp_user',''),
+ ('smtp_pass',''),
+ ('smtp_from',''),
+ ('smtp_secure','tls'),
+ ('backup_email','');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES
  ('10','00002020','Juan','Perez','Guardia Medica',1200,'Medico de guardia'),
@@ -460,16 +482,112 @@ def bitacora_filtrada(filtros, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         return [dict(r) for r in conn.execute(sql,args)]
 
+def encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        cur=conn.execute("INSERT INTO cola_envios (codigo,cap_code,mensaje,baudios,origen,estado) VALUES (?,?,?,?,?,?)",
+                         (codigo,caps,mensaje,baudios,origen,"pendiente"))
+        return cur.lastrowid
+
 def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
-    import subprocess, sys
     if not codigo or not mensaje: return {"status":"error","detalle":"falta codigo o mensaje"}
     dest = resolver_destino(codigo, db_path)
     if not dest: return {"status":"error","detalle":"codigo inactivo o inexistente"}
+    caps, baudios, tipo = dest
+    qid = encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path)
+    return {"status":"encolado","detalle":f"mensaje encolado (id={qid})","id":qid}
+
+def listar_cola(estado=None, limit=200, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        if estado:
+            rows=conn.execute("SELECT * FROM cola_envios WHERE estado=? ORDER BY id DESC LIMIT ?",(estado,limit))
+        else:
+            rows=conn.execute("SELECT * FROM cola_envios ORDER BY id DESC LIMIT ?",(limit,))
+        return [dict(r) for r in rows]
+
+def estado_cola(db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        counts={}
+        for r in conn.execute("SELECT estado, COUNT(*) as c FROM cola_envios GROUP BY estado"):
+            counts[r["estado"]]=r["c"]
+        return counts
+
+def reintentar_cola(cid, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE cola_envios SET estado='pendiente', intentos=0, observaciones='' WHERE id=? AND estado='error'",(cid,))
+
+def limpiar_cola(db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM cola_envios WHERE estado='enviado'")
+
+def procesar_siguiente_cola(db_path=DEFAULT_DB):
+    import subprocess, sys
     handler="/var/lib/asterisk/agi-bin/pocsag_handler.py"
     if not os.path.exists(handler): handler="/opt/pocsag-server/agi/pocsag_handler.py"
-    rc=subprocess.run([sys.executable,handler,origen,codigo,mensaje],capture_output=True,text=True)
-    if rc.returncode==0: return {"status":"enviado"}
-    return {"status":"error","detalle":rc.stderr.strip() or "fallo el envio"}
+    with get_conn(db_path) as conn:
+        row=conn.execute("SELECT * FROM cola_envios WHERE estado='pendiente' ORDER BY id ASC LIMIT 1").fetchone()
+        if not row: return None
+        conn.execute("UPDATE cola_envios SET estado='enviando', intentos=intentos+1 WHERE id=?",(row["id"],))
+        conn.commit()
+    item=dict(row)
+    try:
+        rc=subprocess.run([sys.executable,handler,item["origen"] or "cola",item["codigo"],item["mensaje"]],
+                          capture_output=True,text=True,timeout=120)
+        ok = rc.returncode==0
+        obs = "" if ok else (rc.stderr or rc.stdout or "fallo").strip()[:200]
+    except Exception as e:
+        ok=False; obs=str(e)[:200]
+    with get_conn(db_path) as conn:
+        if ok:
+            conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=CURRENT_TIMESTAMP, observaciones='' WHERE id=?",(item["id"],))
+        else:
+            conn.execute("UPDATE cola_envios SET estado='error', fecha_procesado=CURRENT_TIMESTAMP, observaciones=? WHERE id=?",(obs,item["id"]))
+    return item["id"]
+
+def backup_db(db_path=DEFAULT_DB):
+    import shutil, time
+    backup_dir=os.path.join(os.path.dirname(db_path),"backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    ts=time.strftime("%Y%m%d_%H%M%S")
+    bf=os.path.join(backup_dir, f"pocsag_backup_{ts}.db")
+    shutil.copy2(db_path, bf)
+    return bf
+
+def restore_db(file_data, db_path=DEFAULT_DB):
+    import shutil
+    bk=db_path+".pre_restore"
+    if os.path.exists(db_path): shutil.copy2(db_path, bk)
+    with open(db_path,"wb") as f: f.write(file_data)
+    return bk
+
+def enviar_email(to, subject, body, attachment_path=None, db_path=DEFAULT_DB):
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    host=get_config("smtp_host","",db_path)
+    if not host: return {"error":"SMTP no configurado"}
+    port=int(get_config("smtp_port","587",db_path))
+    user=get_config("smtp_user","",db_path)
+    pwd=get_config("smtp_pass","",db_path)
+    frm=get_config("smtp_from",user,db_path) or user
+    secure=get_config("smtp_secure","tls",db_path)
+    msg=MIMEMultipart(); msg["From"]=frm; msg["To"]=to; msg["Subject"]=subject
+    msg.attach(MIMEText(body,"plain","utf-8"))
+    if attachment_path and os.path.exists(attachment_path):
+        with open(attachment_path,"rb") as f:
+            part=MIMEBase("application","octet-stream"); part.set_payload(f.read()); encoders.encode_base64(part)
+            part.add_header("Content-Disposition",f'attachment; filename="{os.path.basename(attachment_path)}"')
+            msg.attach(part)
+    try:
+        if secure=="ssl": server=smtplib.SMTP_SSL(host,port)
+        else:
+            server=smtplib.SMTP(host,port)
+            if secure=="tls": server.starttls()
+        if user: server.login(user,pwd)
+        server.sendmail(frm,[to],msg.as_string()); server.quit()
+        return {"ok":True}
+    except Exception as e: return {"error":str(e)}
 
 if __name__ == "__main__":
     import sys
@@ -599,7 +717,7 @@ def log(msg):
 
 def fail():
     subprocess.run([PTT_OFF], check=False)
-    sys.stdout.write("SET VARIABLE AGISTATUS FAILURE\n"); sys.stdout.flush(); sys.exit(0)
+    sys.stdout.write("SET VARIABLE AGISTATUS FAILURE\n"); sys.stdout.flush(); sys.exit(1)
 
 def main():
     try:
@@ -644,6 +762,36 @@ def main():
 if __name__ == "__main__": main()
 EOF
 mkx "${APP_DIR}/agi/pocsag_handler.py"
+
+# --- agi/cola_worker.py ---
+cat > "${APP_DIR}/agi/cola_worker.py" <<'EOF'
+#!/usr/bin/env python3
+import sys, os, time
+sys.path.insert(0, "/opt/pocsag-server")
+from database.db_manager import procesar_siguiente_cola, get_conn, DEFAULT_DB
+
+def recuperar_enviando():
+    with get_conn(DEFAULT_DB) as conn:
+        conn.execute("UPDATE cola_envios SET estado='pendiente' WHERE estado='enviando'")
+
+def main():
+    recuperar_enviando()
+    os.makedirs("/opt/pocsag-server/logs", exist_ok=True)
+    while True:
+        try:
+            result = procesar_siguiente_cola()
+            if result is None:
+                time.sleep(2)
+            else:
+                time.sleep(0.5)
+        except Exception as e:
+            with open("/opt/pocsag-server/logs/cola.log","a") as f:
+                f.write(f"[ERROR] {e}\n")
+            time.sleep(5)
+
+if __name__ == "__main__": main()
+EOF
+mkx "${APP_DIR}/agi/cola_worker.py"
 
 # --- encoder/pocsag_gen.py ---
 cat > "${APP_DIR}/encoder/pocsag_gen.py" <<'EOF'
@@ -835,6 +983,30 @@ find "$AUDIO_DIR" -name 'out_*.wav' -type f -mtime +"${DIAS}" -delete 2>/dev/nul
 EOF
 mkx "${APP_DIR}/scripts/limpiar_audio.sh"
 
+# --- scripts/backup_auto.sh ---
+cat > "${APP_DIR}/scripts/backup_auto.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DB="/opt/pocsag-server/database/pocsag.db"
+BACKUP_DIR="/opt/pocsag-server/database/backups"
+DIAS="${1:-7}"
+mkdir -p "$BACKUP_DIR"
+TS=$(date +%Y%m%d_%H%M%S)
+BACKUP="$BACKUP_DIR/pocsag_backup_${TS}.db"
+cp "$DB" "$BACKUP" 2>/dev/null || exit 0
+find "$BACKUP_DIR" -name 'pocsag_backup_*.db' -mtime +"${DIAS}" -delete 2>/dev/null || true
+python3 -c "
+import sys; sys.path.insert(0,'/opt/pocsag-server')
+from database.db_manager import enviar_email, get_config
+email=get_config('backup_email','')
+if email:
+    r=enviar_email(email,'Backup automatico POCSAG','Backup de base de datos adjunto.','$BACKUP')
+    if 'error' in r:
+        with open('/opt/pocsag-server/logs/backup.log','a') as f: f.write(f'[EMAIL ERROR] {r}\n')
+" 2>/dev/null || true
+EOF
+mkx "${APP_DIR}/scripts/backup_auto.sh"
+
 # --- services/pocsag-api.service ---
 cat > "${APP_DIR}/services/pocsag-api.service" <<'EOF'
 [Unit]
@@ -869,6 +1041,23 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+# --- services/pocsag-cola.service ---
+cat > "${APP_DIR}/services/pocsag-cola.service" <<'EOF'
+[Unit]
+Description=Worker de cola de envios POCSAG
+After=network.target pocsag-api.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pocsag-server/agi/cola_worker.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # --- backend/app.py ---
 cat > "${APP_DIR}/backend/app.py" <<'EOF'
 #!/usr/bin/env python3
@@ -880,7 +1069,9 @@ from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actu
     toggle_pager, importar_pagers, importar_grupos,
     listar_grupos, buscar_grupos, crear_grupo, actualizar_grupo, borrar_grupo,
     listar_extensiones, crear_extension, actualizar_extension, borrar_extension, generar_pjsip_conf,
-    all_config, set_config, historial, enviar_mensaje, login_validar, verificar_token, cerrar_sesion)
+    all_config, set_config, historial, enviar_mensaje, login_validar, verificar_token, cerrar_sesion,
+    listar_cola, estado_cola, reintentar_cola, limpiar_cola, procesar_siguiente_cola,
+    backup_db, restore_db, enviar_email)
 
 HOST=os.environ.get("POCSAG_API_HOST","0.0.0.0")
 PORT=int(os.environ.get("POCSAG_API_PORT","8080"))
@@ -1024,6 +1215,25 @@ class H(BaseHTTPRequestHandler):
             sub=q.get("cmd",["status"])[0]; acmd=SAFE_CMDS.get(sub)
             if not acmd: return jr(self,{"error":"comando no permitido"},400)
             return jr(self,{"cmd":sub,"salida":ast_run(acmd)})
+        if p=="/api/cola":
+            if not self._guard(): return
+            est=q.get("estado",[""])[0] if q.get("estado") else None
+            return jr(self, listar_cola(est))
+        if p=="/api/cola/estado":
+            if not self._guard(): return
+            return jr(self, estado_cola())
+        if p=="/api/db/backup":
+            if not self._guard(): return
+            try:
+                bf=backup_db()
+                with open(bf,"rb") as f: data=f.read()
+                self.send_response(200)
+                self.send_header("Content-Type","application/octet-stream")
+                self.send_header("Content-Disposition",f'attachment; filename="{os.path.basename(bf)}"')
+                self.send_header("Content-Length",str(len(data))); self.end_headers()
+                self.wfile.write(data)
+            except Exception as e: return jr(self,{"error":str(e)},500)
+            return
         self.send_response(404); self.end_headers()
     def do_POST(self):
         p=self.path
@@ -1073,6 +1283,38 @@ class H(BaseHTTPRequestHandler):
                 if not self._guard(): return
                 out=ast_run("core restart now")
                 return jr(self,{"salida":out})
+            if p=="/api/cola/reintentar":
+                if not self._guard(): return
+                d=read_body(self); reintentar_cola(int(d["id"]))
+                return jr(self,{"ok":True})
+            if p=="/api/cola/limpiar":
+                if not self._guard(): return
+                limpiar_cola()
+                return jr(self,{"ok":True})
+            if p=="/api/db/restore":
+                if not self._guard(): return
+                ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
+                try:
+                    bk=restore_db(body)
+                    return jr(self,{"ok":True,"backup":bk})
+                except Exception as e: return jr(self,{"error":str(e)},500)
+            if p=="/api/db/backup-email":
+                if not self._guard(): return
+                d=read_body(self)
+                email=d.get("email","") or all_config().get("backup_email","")
+                if not email: return jr(self,{"error":"no hay email configurado"},400)
+                try:
+                    bf=backup_db()
+                    r=enviar_email(email,"Backup POCSAG","Backup de base de datos adjunto.",bf)
+                    return jr(self, r, 200 if "ok" in r else 400)
+                except Exception as e: return jr(self,{"error":str(e)},500)
+            if p=="/api/smtp/test":
+                if not self._guard(): return
+                d=read_body(self)
+                try:
+                    r=enviar_email(d.get("email",""),"Prueba SMTP POCSAG","Si recibe este mensaje, SMTP funciona correctamente.")
+                    return jr(self, r, 200 if "ok" in r else 400)
+                except Exception as e: return jr(self,{"error":str(e)},500)
             self.send_response(404); self.end_headers()
         except Exception as e: return jr(self,{"error":str(e)},400)
     def do_PUT(self):
@@ -1248,7 +1490,7 @@ async function enviar(){
   if(!codigo){toast(false,'Seleccione un destinatario de la lista.');return;}
   if(!mensaje){toast(false,'Escriba un mensaje.');return;}
   const r=await fetch('/api/enviar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigo,mensaje,origen:'web'})}).then(r=>r.json());
-  if(r.status==='enviado'){toast(true,'Mensaje enviado correctamente.');document.getElementById('e_msg').value='';loadHist(offset);}else toast(false,'Error: '+(r.detalle||'no se pudo enviar'));
+  if(r.status==='enviado'||r.status==='encolado'){toast(true,r.status==='encolado'?'Mensaje encolado para envio.':'Mensaje enviado correctamente.');document.getElementById('e_msg').value='';loadHist(offset);}else toast(false,'Error: '+(r.detalle||'no se pudo enviar'));
 }
 function histQuery(){const p=new URLSearchParams();p.set('limit',PG);p.set('offset',offset);
   const d=document.getElementById('b_desde').value,h=document.getElementById('b_hasta').value,c=document.getElementById('b_codigo').value,i=document.getElementById('b_interno').value,e=document.getElementById('b_estado').value;
@@ -1352,6 +1594,8 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <button onclick="tab('cfg',this)">⚙ Parametros</button>
       <button onclick="tab('pbx',this)">🔀 PBX</button>
       <button onclick="tab('theme',this)">🎨 Apariencia</button>
+      <button onclick="tab('cola',this)">📋 Cola</button>
+      <button onclick="tab('bd',this)">💾 Base de datos</button>
     </nav>
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
@@ -1393,7 +1637,13 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="row"><div><label>Timeout mensaje (seg)</label><input id="c_mensaje_timeout" type="number" step="1"></div><div><label>PTT pre-activo (seg)</label><input id="c_ptt_preactivo" type="number" step="0.1"></div>
       <div><label>Timeout digitos (seg)</label><input id="c_digit_timeout" type="number" step="1"></div><div><label>Timeout respuesta (seg)</label><input id="c_response_timeout" type="number" step="1"></div>
       <div><label>Modo prueba (1=si 0=no)</label><input id="c_test_mode" type="number" min="0" max="1"></div></div>
-      <button class="btn btn-pri" onclick="saveConfig()">Guardar parametros</button><div id="cfg_res" class="toast"></div></div></div>
+      <button class="btn btn-pri" onclick="saveConfig()">Guardar parametros</button><div id="cfg_res" class="toast"></div>
+      <div style="border-top:1px solid var(--line);margin-top:1rem;padding-top:1rem"><h3 style="font-size:.9rem;margin:0 0 .8rem">📧 Configuracion SMTP (para envio de backups por email)</h3>
+      <div class="row"><div><label>Servidor SMTP</label><input id="c_smtp_host" placeholder="smtp.gmail.com"></div><div><label>Puerto</label><input id="c_smtp_port" type="number" value="587"></div></div>
+      <div class="row"><div><label>Usuario SMTP</label><input id="c_smtp_user"></div><div><label>Clave SMTP</label><input id="c_smtp_pass" type="password"></div></div>
+      <div class="row"><div><label>Remitente (email from)</label><input id="c_smtp_from"></div><div><label>Seguridad</label><select id="c_smtp_secure"><option value="tls">TLS</option><option value="ssl">SSL</option><option value="none">Ninguna</option></select></div></div>
+      <div class="row"><div><label>Email para recibir backups</label><input id="c_backup_email"></div></div>
+      <button class="btn btn-sec" onclick="smtpTest()">Probar SMTP</button></div></div></div>
     <div class="tab" id="t-pbx"><div class="card"><h2>🔀 Gestion del PBX</h2>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"><button class="btn btn-sec btn-sm" onclick="pbx('status')">Estado</button><button class="btn btn-sec btn-sm" onclick="pbx('peers')">Endpoints</button><button class="btn btn-sec btn-sm" onclick="pbx('channels')">Canales</button><button class="btn btn-sec btn-sm" onclick="pbx('uptime')">Uptime</button><button class="btn btn-warn btn-sm" onclick="pbxReload()">Recargar config</button><button class="btn btn-del btn-sm" onclick="pbxRestart()">Reiniciar PBX</button></div>
       <pre id="pbx_out">—</pre></div></div>
@@ -1403,6 +1653,17 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="row"><div><label>Fondo</label><input id="th_bg" type="color" value="#0b1220"></div><div><label>Panel</label><input id="th_panel" type="color" value="#111c30"></div></div>
       <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="saveTheme()">Guardar colores</button><button class="btn btn-sec" onclick="resetTheme()">Restablecer por defecto</button></div>
       <div id="th_res" class="toast"></div></div></div>
+    <div class="tab" id="t-cola"><div class="card"><h2><span>📋 Cola de envios</span><div style="display:flex;gap:.5rem"><button class="btn btn-warn btn-sm" onclick="colaReintentar()">Reintentar fallidos</button><button class="btn btn-sec btn-sm" onclick="colaLimpiar()">Limpiar enviados</button></div></h2>
+      <div id="cola_stats" style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1rem"></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Fecha encola</th><th>Codigo</th><th>Mensaje</th><th>Origen</th><th>Estado</th><th>Intentos</th><th>Obs</th></tr></thead><tbody id="tb_cola"></tbody></table></div></div></div>
+    <div class="tab" id="t-bd"><div class="card"><h2>💾 Base de datos</h2>
+      <p style="color:var(--mut);font-size:.85rem;margin-top:0">Realice un backup de la base de datos o restaure desde un archivo anterior.</p>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1rem"><button class="btn btn-pri" onclick="dbBackup()">⬇ Descargar backup</button><button class="btn btn-ok" onclick="dbBackupEmail()">📧 Enviar backup por mail</button></div>
+      <div class="drop" id="dropDB"><input type="file" id="ifileDB" accept=".db" style="display:none"><div id="dftxtDB">Arrastre un archivo .db o haga click para restaurar</div></div>
+      <div style="margin-top:1rem"><button class="btn btn-del" id="impbtnDB" onclick="dbRestore()" disabled>Restaurar desde archivo</button></div>
+      <div id="db_res" class="toast"></div></div>
+      <div class="card"><h2>Backup automatico</h2>
+      <p style="color:var(--mut);font-size:.85rem;margin-top:0">Se realiza un backup automatico diario a las 3 AM. Los backups se guardan en /opt/pocsag-server/database/backups/ y se eliminan despues de 7 dias. Configure el email destino en Parametros para recibir copias por mail.</p></div></div>
   </div>
 </div>
 <div class="modal" id="mPager"><div class="card"><h2 id="mPT">Pager</h2>
@@ -1425,7 +1686,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',theme:'Apariencia'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='theme')loadTheme();if(id==='enviar')initSend();}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX',theme:'Apariencia',cola:'Cola de envios',bd:'Base de datos'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='theme')loadTheme();if(id==='cola')loadCola();if(id==='bd')loadBD();if(id==='enviar')initSend();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -1440,7 +1701,7 @@ async function buscarDestAdmin(q){const [pe,gr]=await Promise.all([api('GET','/a
 function renderSList(r){const ul=document.getElementById('s_list');ul.innerHTML=r.map(x=>`<li onclick="pickS('${x.codigo}','${(x.label||'').replace(/'/g,'')}')" style="padding:.5rem .6rem;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between"><span>${x.label} <span style="color:var(--mut);font-size:.8rem">${x.codigo}</span></span><span style="font-size:.7rem;color:var(--acc);font-weight:700">${x.tipo}</span></li>`).join('');ul.style.display=r.length?'block':'none';}
 function pickS(codigo,label){sChosen=codigo;document.getElementById('s_q').value=label+' ('+codigo+')';document.getElementById('s_list').style.display='none';}
 document.addEventListener('click',e=>{const c=document.getElementById('s_q');if(c&&!c.contains(e.target)){const ul=document.getElementById('s_list');if(ul)ul.style.display='none';}});
-async function sendMsg(){const t=document.getElementById('s_res');if(!sChosen){t.className='toast show err';t.textContent='Seleccione un destinatario.';return;}const msg=document.getElementById('s_msg').value.trim();if(!msg){t.className='toast show err';t.textContent='Escriba un mensaje.';return;}t.className='toast show ok';t.textContent='Enviando...';const r=await api('POST','/api/enviar',{codigo:sChosen,mensaje:msg,origen:'admin'});if(r.status==='enviado'){t.className='toast show ok';t.textContent='Mensaje enviado correctamente.';document.getElementById('s_msg').value='';}else{t.className='toast show err';t.textContent='Error: '+(r.detalle||'no se pudo enviar');}}
+async function sendMsg(){const t=document.getElementById('s_res');if(!sChosen){t.className='toast show err';t.textContent='Seleccione un destinatario.';return;}const msg=document.getElementById('s_msg').value.trim();if(!msg){t.className='toast show err';t.textContent='Escriba un mensaje.';return;}t.className='toast show ok';t.textContent='Enviando...';const r=await api('POST','/api/enviar',{codigo:sChosen,mensaje:msg,origen:'admin'});if(r.status==='enviado'||r.status==='encolado'){t.className='toast show ok';t.textContent=r.status==='encolado'?'Mensaje encolado para envio.':'Mensaje enviado correctamente.';document.getElementById('s_msg').value='';}else{t.className='toast show err';t.textContent='Error: '+(r.detalle||'no se pudo enviar');}}
 // Pagers
 async function loadPagers(){const q=document.getElementById('pq').value.trim();document.getElementById('tb_pagers').innerHTML='<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cargando...</td></tr>';const r=await api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):''));document.getElementById('tb_pagers').innerHTML=(r||[]).map(x=>`<tr><td>${x.codigo}</td><td>${x.cap_code}</td><td>${x.nombre||''}</td><td>${x.apellido||''}</td><td>${x.area||''}</td><td>${x.baudios}</td><td><button class="sw ${x.activo?'on':''}" onclick="toggleP(${x.id},${x.activo?0:1})"></button></td><td><button class="btn btn-sec btn-sm" onclick="openPager(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delP(${x.id})">✕</button></td></tr>`).join('')||`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin resultados</td></tr>`;}
 document.getElementById('pq').addEventListener('input',()=>{clearTimeout(window._pt);window._pt=setTimeout(loadPagers,200);});
@@ -1479,16 +1740,29 @@ async function aplicarExt(){const r=await api('POST','/api/extensions/aplicar');
 // Historial
 function hQuery(){const p=new URLSearchParams();p.set('limit',HPG);p.set('offset',hoff);const d=document.getElementById('h_desde').value,h=document.getElementById('h_hasta').value,c=document.getElementById('h_codigo').value,i=document.getElementById('h_interno').value,e=document.getElementById('h_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p;}
 const badge=e=>`<span class="badge ${e==='enviado'?'ok':'err'}">${e||'-'}</span>`;
-async function loadHist(off){hoff=off||0;document.getElementById('tb_hist').innerHTML='<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cargando...</td></tr>';const r=await api('GET','/api/historial?'+hQuery());htot=r.total||0;const rows=r.rows||[];document.getElementById('tb_hist').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${x.baudios||''}</td><td>${badge(x.estado)}</td><td>${x.observaciones||''}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin registros</td></tr>`;document.getElementById('hg_info').textContent=`${rows.length?hoff+1:0}-${hoff+rows.length} de ${htot}`;document.getElementById('hg_prev').disabled=hoff<=0;document.getElementById('hg_next').disabled=hoff+HPG>=htot;}
+async function loadHist(off){hoff=off||0;document.getElementById('tb_hist').innerHTML='<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cargando...</td></tr>';try{const r=await fetch('/api/historial?'+hQuery()).then(r=>r.json());htot=r.total||0;const rows=r.rows||[];document.getElementById('tb_hist').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${x.baudios||''}</td><td>${badge(x.estado)}</td><td>${x.observaciones||''}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin registros</td></tr>`;document.getElementById('hg_info').textContent=`${rows.length?hoff+1:0}-${hoff+rows.length} de ${htot}`;document.getElementById('hg_prev').disabled=hoff<=0;document.getElementById('hg_next').disabled=hoff+HPG>=htot;}catch(e){document.getElementById('tb_hist').innerHTML=`<tr><td colspan="8" style="color:var(--err);text-align:center;padding:1rem">Error: ${e.message}</td></tr>`;}}
 function hgGo(d){loadHist(Math.max(0,hoff+d*HPG));}
 function exportHist(){const p=new URLSearchParams();const d=document.getElementById('h_desde').value,h=document.getElementById('h_hasta').value,c=document.getElementById('h_codigo').value,i=document.getElementById('h_interno').value,e=document.getElementById('h_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);window.open('/api/historial/export?'+p,'_blank');}
 // Config
-async function loadConfig(){const c=await api('GET','/api/config');['admin_user','admin_pass','mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});}
-async function saveConfig(){const d={admin_user:document.getElementById('c_admin_user').value,admin_pass:document.getElementById('c_admin_pass').value,mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value};await api('PUT','/api/config',d);const t=document.getElementById('cfg_res');t.className='toast show ok';t.textContent='Parametros guardados';setTimeout(()=>t.className='toast',2500);}
+async function loadConfig(){const c=await api('GET','/api/config');['admin_user','admin_pass','mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode','smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_secure','backup_email'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});}
+async function saveConfig(){const d={admin_user:document.getElementById('c_admin_user').value,admin_pass:document.getElementById('c_admin_pass').value,mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value,smtp_host:document.getElementById('c_smtp_host').value,smtp_port:document.getElementById('c_smtp_port').value,smtp_user:document.getElementById('c_smtp_user').value,smtp_pass:document.getElementById('c_smtp_pass').value,smtp_from:document.getElementById('c_smtp_from').value,smtp_secure:document.getElementById('c_smtp_secure').value,backup_email:document.getElementById('c_backup_email').value};await api('PUT','/api/config',d);const t=document.getElementById('cfg_res');t.className='toast show ok';t.textContent='Parametros guardados';setTimeout(()=>t.className='toast',2500);}
 // Apariencia
 async function loadTheme(){const c=await api('GET','/api/config');['acc','acc2','bg','panel'].forEach(k=>{const el=document.getElementById('th_'+k);if(el&&c['theme_'+k])el.value=c['theme_'+k];});}
 async function saveTheme(){const d={theme_acc:document.getElementById('th_acc').value,theme_acc2:document.getElementById('th_acc2').value,theme_bg:document.getElementById('th_bg').value,theme_panel:document.getElementById('th_panel').value};await api('PUT','/api/config',d);applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Colores guardados';setTimeout(()=>t.className='toast',2500);}
 async function resetTheme(){await api('PUT','/api/config',{theme_acc:'#14b8a6',theme_acc2:'#0ea5e9',theme_bg:'#0b1220',theme_panel:'#111c30'});loadTheme();applyTheme();const t=document.getElementById('th_res');t.className='toast show ok';t.textContent='Valores restablecidos';setTimeout(()=>t.className='toast',2500);}
+// Cola
+async function loadCola(){try{const stats=await api('GET','/api/cola/estado');const items=await api('GET','/api/cola');const sd=document.getElementById('cola_stats');sd.innerHTML=Object.entries(stats||{}).map(([k,v])=>`<span class="badge ${k==='pendiente'?'mut':k==='enviado'?'ok':k==='error'?'err':'mut'}">${k}: ${v}</span>`).join('')||'<span class="badge mut">cola vacia</span>';const rows=items||[];document.getElementById('tb_cola').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.id}</td><td>${x.fecha_encola}</td><td>${x.codigo}</td><td>${(x.mensaje||'').slice(0,40)}</td><td>${x.origen||''}</td><td><span class="badge ${x.estado==='enviado'?'ok':x.estado==='error'?'err':'mut'}">${x.estado}</span></td><td>${x.intentos||0}</td><td>${(x.observaciones||'').slice(0,30)}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cola vacia</td></tr>`;}catch(e){}}
+async function colaReintentar(){if(!confirm('Reintentar todos los mensajes fallidos?'))return;const items=await api('GET','/api/cola?estado=error');for(const item of (items||[])){await api('POST','/api/cola/reintentar',{id:item.id});}loadCola();}
+async function colaLimpiar(){if(!confirm('Eliminar todos los mensajes ya enviados de la cola?'))return;await api('POST','/api/cola/limpiar');loadCola();}
+// Base de datos
+async function dbBackup(){window.open('/api/db/backup','_blank');}
+async function dbBackupEmail(){const t=document.getElementById('db_res');t.className='toast show ok';t.textContent='Enviando backup por email...';const r=await api('POST','/api/db/backup-email',{});if(r.ok){t.className='toast show ok';t.textContent='Backup enviado por email.';}else{t.className='toast show err';t.textContent='Error: '+(r.error||'no se pudo enviar');}setTimeout(()=>t.className='toast',4000);}
+let dbFile=null;const dropDB=document.getElementById('dropDB'),ifileDB=document.getElementById('ifileDB'),dftxtDB=document.getElementById('dftxtDB');
+if(dropDB){dropDB.addEventListener('click',()=>ifileDB.click());ifileDB.addEventListener('change',e=>{dbFile=e.target.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});['dragover','dragenter'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.add('hover');}));['dragleave','drop'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.remove('hover');}));dropDB.addEventListener('drop',e=>{dbFile=e.dataTransfer.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});}
+async function dbRestore(){if(!dbFile)return;if(!confirm('ATENCION: Esto reemplaza la base de datos actual. Asegurese de tener un backup. Continuar?'))return;const buf=await dbFile.arrayBuffer();const t=document.getElementById('db_res');t.className='toast show ok';t.textContent='Restaurando...';const r=await fetch('/api/db/restore',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN},body:buf}).then(r=>r.json());if(r.ok){t.className='toast show ok';t.textContent='Base restaurada. Backup previo: '+r.backup;}else{t.className='toast show err';t.textContent='Error: '+(r.error||'no se pudo restaurar');}}
+function loadBD(){}
+// SMTP
+async function smtpTest(){const email=prompt('Email destino para la prueba:');if(!email)return;const r=await api('POST','/api/smtp/test',{email:email});if(r.ok){alert('Email de prueba enviado correctamente.');}else{alert('Error: '+(r.error||'no se pudo enviar'));}}
 // PBX
 async function pbx(cmd){const r=await api('GET','/api/pbx?cmd='+cmd);document.getElementById('pbx_out').textContent=r.salida||r.error||'';}
 async function pbxReload(){if(!confirm('Recargar configuracion del PBX?'))return;const r=await api('POST','/api/pbx/reload');document.getElementById('pbx_out').textContent=r.salida||'';}
@@ -1581,6 +1855,10 @@ cat > /etc/cron.d/pocsag-cleanup <<'EOF'
 0 3 * * * root /opt/pocsag-server/scripts/limpiar_audio.sh 7 >/dev/null 2>&1
 EOF
 chmod 644 /etc/cron.d/pocsag-cleanup
+cat > /etc/cron.d/pocsag-backup <<'EOF'
+0 3 * * * root /opt/pocsag-server/scripts/backup_auto.sh 7 >/dev/null 2>&1
+EOF
+chmod 644 /etc/cron.d/pocsag-backup
 systemctl daemon-reload
 systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
 asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
@@ -1590,6 +1868,8 @@ systemctl restart pocsag-api 2>/dev/null || warn "API no pudo reiniciarse"
 systemctl enable pocsag-api 2>/dev/null || true
 systemctl restart pocsag-monitor 2>/dev/null || true
 systemctl enable pocsag-monitor 2>/dev/null || true
+systemctl restart pocsag-cola 2>/dev/null || warn "Cola worker no pudo iniciarse"
+systemctl enable pocsag-cola 2>/dev/null || true
 sleep 3
 
 # ============================ 10. CHEQUEO ================================
