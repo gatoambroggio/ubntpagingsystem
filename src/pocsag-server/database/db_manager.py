@@ -2,6 +2,7 @@
 """database/db_manager.py - Helpers SQLite para el sistema POCSAG."""
 import sqlite3
 import os
+import datetime
 from contextlib import contextmanager
 
 DEFAULT_DB = "/opt/pocsag-server/database/pocsag.db"
@@ -49,9 +50,10 @@ def registrar_bitacora(interno, codigo, cap_code, mensaje, baudios, estado, db_p
     with get_conn(db_path) as conn:
         conn.execute(
             """INSERT INTO bitacora
-               (interno_origen,codigo,cap_code,mensaje,baudios,estado)
-               VALUES (?,?,?,?,?,?)""",
-            (interno, codigo, cap_code, mensaje, baudios, estado),
+               (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado)
+               VALUES (?,?,?,?,?,?,?)""",
+            (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             interno, codigo, cap_code, mensaje, baudios, estado),
         )
 
 
