@@ -54,7 +54,7 @@ if [[ $UPDATE -eq 0 ]]; then
   apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git \
     libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
     python3-dev build-essential libffi-dev wget
-  pip3 install --quiet --break-system-packages openpyxl 2>/dev/null || warn "openpyxl no instalado (importacion Excel solo admitira CSV)"
+  pip3 install --break-system-packages openpyxl 2>&1 || python3 -m pip install --break-system-packages openpyxl 2>&1 || warn "openpyxl no instalado (importacion Excel solo admitira CSV)"
 else
   echo "==> 1/10 Dependencias base (omitidas en --update)"
 fi
@@ -992,6 +992,7 @@ class H(BaseHTTPRequestHandler):
                 ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
                 rows,err=parse_import(body,unquote(self.headers.get("X-Filename","")))
                 if err: return jr(self,{"error":err},400)
+                if not rows: return jr(self,{"error":"El archivo no tiene filas validas con codigo y cap_code"},400)
                 return jr(self, importar_pagers(rows))
             if p=="/api/extensions":
                 if not self._guard(): return
@@ -1160,8 +1161,8 @@ tbody tr:hover{background:rgba(20,184,166,.05)}
 </main>
 <div class="foot"><span>Sistema POCSAG · VoIP a pager</span><a href="/admin">Acceso administradores →</a></div>
 <script>
-const PG=50; let offset=0, total=0, chosen=null;
-function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');if(id==='hist')loadHist(0);}
+const PG=50; let offset=0, total=0, chosen=null, histTimer=null;
+function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(offset),8000);}}
 function toast(ok,msg){const t=document.getElementById('e_res');t.className='toast show '+(ok?'ok':'err');t.textContent=msg;}
 async function buscarDest(q){
   const [pe,gr]=await Promise.all([fetch('/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')).then(r=>r.json()),fetch('/api/grupos'+(q?('?q='+encodeURIComponent(q)):'')).then(r=>r.json())]);
@@ -1188,7 +1189,7 @@ function histQuery(){const p=new URLSearchParams();p.set('limit',PG);p.set('offs
   const d=document.getElementById('b_desde').value,h=document.getElementById('b_hasta').value,c=document.getElementById('b_codigo').value,i=document.getElementById('b_interno').value,e=document.getElementById('b_estado').value;
   if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p;}
 const badge=e=>`<span class="badge ${e==='enviado'?'ok':'err'}">${e||'-'}</span>`;
-async function loadHist(off){offset=off||0;const r=await fetch('/api/historial?'+histQuery()).then(r=>r.json());total=r.total||0;const rows=r.rows||[];
+async function loadHist(off){offset=off||0;document.getElementById('bit').innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--mut);padding:1.4rem">Cargando...</td></tr>';const r=await fetch('/api/historial?'+histQuery()).then(r=>r.json());total=r.total||0;const rows=r.rows||[];
   document.getElementById('bit').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${badge(x.estado)}</td></tr>`).join(''):`<tr><td colspan="6" style="text-align:center;color:var(--mut);padding:1.4rem">Sin registros</td></tr>`;
   document.getElementById('pg_info').textContent=`${rows.length?offset+1:0}-${offset+rows.length} de ${total}`;
   document.getElementById('pg_prev').disabled=offset<=0;document.getElementById('pg_next').disabled=offset+PG>=total;}
@@ -1278,6 +1279,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="brand"><div class="logo">🧭</div><div>POCSAG <small style="display:block;color:var(--mut);font-weight:500;font-size:.7rem">admin</small></div></div>
     <nav>
       <button class="active" onclick="tab('pagers',this)">👤 Pagers</button>
+      <button onclick="tab('enviar',this)">📨 Enviar</button>
       <button onclick="tab('grupos',this)">👥 Grupos</button>
       <button onclick="tab('import',this)">📥 Importar</button>
       <button onclick="tab('ext',this)">☎ Extensiones</button>
@@ -1289,6 +1291,11 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
   </div>
   <div class="content">
     <div class="topbar"><h1 id="tit">Pagers</h1></div>
+    <div class="tab" id="t-enviar"><div class="card"><h2>📨 Enviar mensaje</h2>
+      <div class="field"><label>Buscar destinatario (nombre, codigo o area)</label>
+      <div style="position:relative"><input id="s_q" autocomplete="off" placeholder="Escriba para buscar..."><ul id="s_list" style="position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:var(--panel2);border:1px solid var(--line);border-radius:10px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none"></ul></div></div>
+      <div class="field"><label>Mensaje (alfanumerico)</label><textarea id="s_msg" rows="3" placeholder="Mensaje para el pager..."></textarea></div>
+      <button class="btn btn-pri" onclick="sendMsg()">Enviar mensaje</button><div id="s_res" class="toast"></div></div></div>
     <div class="tab active" id="t-pagers"><div class="card"><h2><span>👤 Pagers individuales</span><button class="btn btn-pri btn-sm" onclick="openPager()">+ Nuevo pager</button></h2>
       <div class="toolbar"><div class="search"><input id="pq" placeholder="Buscar por nombre, apellido, codigo o area..."></div></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Codigo</th><th>CapCode</th><th>Nombre</th><th>Apellido</th><th>Area</th><th>Baud</th><th>Activo</th><th></th></tr></thead><tbody id="tb_pagers"></tbody></table></div></div></div>
@@ -1341,7 +1348,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 let TOKEN=localStorage.getItem('pocsag_tok')||'';
 let editP=null,editG=null,editX=null; const HPG=50; let hoff=0,htot=0;
 function api(m,u,b,raw){const o={method:m,headers:{'Authorization':'Bearer '+TOKEN}};if(b!==undefined){if(raw){o.body=b;}else{o.headers['Content-Type']='application/json';o.body=JSON.stringify(b);}}return fetch(u,o).then(async r=>{if(r.status===401){logout(true);throw new Error('no autorizado');}const txt=await r.text();try{return JSON.parse(txt);}catch(e){return txt;}});}
-function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX'};document.getElementById('tit').textContent=t[id]||'';if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist')loadHist(0);if(id==='pbx')pbx('status');}
+let histTimer=null;function tab(id,el){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.side nav button').forEach(b=>b.classList.remove('active'));document.getElementById('t-'+id).classList.add('active');el.classList.add('active');const t={enviar:'Enviar mensaje',pagers:'Pagers',grupos:'Grupos',import:'Importar codigos',ext:'Extensiones',hist:'Historial',cfg:'Parametros',pbx:'PBX'};document.getElementById('tit').textContent=t[id]||'';if(histTimer){clearInterval(histTimer);histTimer=null;}if(id==='pagers')loadPagers();if(id==='grupos')loadGrupos();if(id==='ext')loadExt();if(id==='cfg')loadConfig();if(id==='hist'){loadHist(0);histTimer=setInterval(()=>loadHist(hoff),8000);}if(id==='pbx')pbx('status');if(id==='enviar')initSend();}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 async function doLogin(){const u=document.getElementById('lu').value,p=document.getElementById('lp').value;document.getElementById('lerr').className='toast err';document.getElementById('lerr').textContent='';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,pass:p})}).then(r=>r.json());if(r.token){TOKEN=r.token;localStorage.setItem('pocsag_tok',TOKEN);showApp();}else{document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent=r.error||'error';}}catch(e){document.getElementById('lerr').classList.add('show');document.getElementById('lerr').textContent='error de conexion';}}
@@ -1349,8 +1356,16 @@ document.getElementById('lp').addEventListener('keydown',e=>{if(e.key==='Enter')
 function logout(silent){TOKEN='';localStorage.removeItem('pocsag_tok');document.getElementById('app').style.display='none';document.getElementById('login').style.display='grid';if(!silent)document.getElementById('lp').value='';}
 function showApp(){document.getElementById('login').style.display='none';document.getElementById('app').style.display='flex';tab('pagers',document.querySelector('.side nav button'));}
 async function checkTok(){if(!TOKEN){return;}try{await api('GET','/api/extensions');showApp();}catch(e){}}
+// Enviar mensaje
+let sChosen=null,sTimer=null,sInit=false;
+function initSend(){if(sInit)return;sInit=true;const sq=document.getElementById('s_q');sq.addEventListener('input',()=>{clearTimeout(sTimer);sTimer=setTimeout(async()=>{const r=await buscarDestAdmin(sq.value.trim());renderSList(r);},180);});sq.addEventListener('focus',()=>{if(document.getElementById('s_list').innerHTML)document.getElementById('s_list').style.display='block';});}
+async function buscarDestAdmin(q){const [pe,gr]=await Promise.all([api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')),api('GET','/api/grupos'+(q?('?q='+encodeURIComponent(q)):''))]);const out=[];(pe||[]).forEach(x=>out.push({codigo:x.codigo,label:`${x.nombre||''} ${x.apellido||''}`.trim()||x.codigo,tipo:'pager'}));(gr||[]).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,tipo:'grupo'}));return out;}
+function renderSList(r){const ul=document.getElementById('s_list');ul.innerHTML=r.map(x=>`<li onclick="pickS('${x.codigo}','${(x.label||'').replace(/'/g,'')}')" style="padding:.5rem .6rem;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between"><span>${x.label} <span style="color:var(--mut);font-size:.8rem">${x.codigo}</span></span><span style="font-size:.7rem;color:var(--acc);font-weight:700">${x.tipo}</span></li>`).join('');ul.style.display=r.length?'block':'none';}
+function pickS(codigo,label){sChosen=codigo;document.getElementById('s_q').value=label+' ('+codigo+')';document.getElementById('s_list').style.display='none';}
+document.addEventListener('click',e=>{const c=document.getElementById('s_q');if(c&&!c.contains(e.target)){const ul=document.getElementById('s_list');if(ul)ul.style.display='none';}});
+async function sendMsg(){const t=document.getElementById('s_res');if(!sChosen){t.className='toast show err';t.textContent='Seleccione un destinatario.';return;}const msg=document.getElementById('s_msg').value.trim();if(!msg){t.className='toast show err';t.textContent='Escriba un mensaje.';return;}t.className='toast show ok';t.textContent='Enviando...';const r=await api('POST','/api/enviar',{codigo:sChosen,mensaje:msg,origen:'admin'});if(r.status==='enviado'){t.className='toast show ok';t.textContent='Mensaje enviado correctamente.';document.getElementById('s_msg').value='';}else{t.className='toast show err';t.textContent='Error: '+(r.detalle||'no se pudo enviar');}}
 // Pagers
-async function loadPagers(){const q=document.getElementById('pq').value.trim();const r=await api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):''));document.getElementById('tb_pagers').innerHTML=(r||[]).map(x=>`<tr><td>${x.codigo}</td><td>${x.cap_code}</td><td>${x.nombre||''}</td><td>${x.apellido||''}</td><td>${x.area||''}</td><td>${x.baudios}</td><td><button class="sw ${x.activo?'on':''}" onclick="toggleP(${x.id},${x.activo?0:1})"></button></td><td><button class="btn btn-sec btn-sm" onclick="openPager(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delP(${x.id})">✕</button></td></tr>`).join('')||`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin resultados</td></tr>`;}
+async function loadPagers(){const q=document.getElementById('pq').value.trim();document.getElementById('tb_pagers').innerHTML='<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cargando...</td></tr>';const r=await api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):''));document.getElementById('tb_pagers').innerHTML=(r||[]).map(x=>`<tr><td>${x.codigo}</td><td>${x.cap_code}</td><td>${x.nombre||''}</td><td>${x.apellido||''}</td><td>${x.area||''}</td><td>${x.baudios}</td><td><button class="sw ${x.activo?'on':''}" onclick="toggleP(${x.id},${x.activo?0:1})"></button></td><td><button class="btn btn-sec btn-sm" onclick="openPager(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delP(${x.id})">✕</button></td></tr>`).join('')||`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin resultados</td></tr>`;}
 document.getElementById('pq').addEventListener('input',()=>{clearTimeout(window._pt);window._pt=setTimeout(loadPagers,200);});
 async function toggleP(id,act){await api('PUT','/api/pagers/'+id+'/estado',{activo:act});loadPagers();}
 async function openPager(id){editP=id||null;let x=null;if(id){const r=await api('GET','/api/pagers');x=(r||[]).find(i=>i.id===id);}['codigo','cap','nombre','apellido','area','desc'].forEach(f=>document.getElementById('p_'+f).value=x?x[f==='cap'?'cap_code':f]||'':'');document.getElementById('p_baud').value=x?x.baudios:1200;document.getElementById('mPT').textContent=id?'Editar pager':'Nuevo pager';openModal('mPager');}
@@ -1380,7 +1395,7 @@ async function aplicarExt(){const r=await api('POST','/api/extensions/aplicar');
 // Historial
 function hQuery(){const p=new URLSearchParams();p.set('limit',HPG);p.set('offset',hoff);const d=document.getElementById('h_desde').value,h=document.getElementById('h_hasta').value,c=document.getElementById('h_codigo').value,i=document.getElementById('h_interno').value,e=document.getElementById('h_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);return p;}
 const badge=e=>`<span class="badge ${e==='enviado'?'ok':'err'}">${e||'-'}</span>`;
-async function loadHist(off){hoff=off||0;const r=await api('GET','/api/historial?'+hQuery());htot=r.total||0;const rows=r.rows||[];document.getElementById('tb_hist').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${x.baudios||''}</td><td>${badge(x.estado)}</td><td>${x.observaciones||''}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin registros</td></tr>`;document.getElementById('hg_info').textContent=`${rows.length?hoff+1:0}-${hoff+rows.length} de ${htot}`;document.getElementById('hg_prev').disabled=hoff<=0;document.getElementById('hg_next').disabled=hoff+HPG>=htot;}
+async function loadHist(off){hoff=off||0;document.getElementById('tb_hist').innerHTML='<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Cargando...</td></tr>';const r=await api('GET','/api/historial?'+hQuery());htot=r.total||0;const rows=r.rows||[];document.getElementById('tb_hist').innerHTML=rows.length?rows.map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.interno_origen||''}</td><td>${x.codigo}</td><td>${x.cap_code||''}</td><td>${x.mensaje||''}</td><td>${x.baudios||''}</td><td>${badge(x.estado)}</td><td>${x.observaciones||''}</td></tr>`).join(''):`<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:1rem">Sin registros</td></tr>`;document.getElementById('hg_info').textContent=`${rows.length?hoff+1:0}-${hoff+rows.length} de ${htot}`;document.getElementById('hg_prev').disabled=hoff<=0;document.getElementById('hg_next').disabled=hoff+HPG>=htot;}
 function hgGo(d){loadHist(Math.max(0,hoff+d*HPG));}
 function exportHist(){const p=new URLSearchParams();const d=document.getElementById('h_desde').value,h=document.getElementById('h_hasta').value,c=document.getElementById('h_codigo').value,i=document.getElementById('h_interno').value,e=document.getElementById('h_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);window.open('/api/historial/export?'+p,'_blank');}
 // Config
