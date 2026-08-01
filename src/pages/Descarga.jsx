@@ -68,7 +68,6 @@ export default function Descarga() {
       if (instalador.length < 1000 || instalador.trimStart().startsWith("<"))
         throw new Error("instalador.sh vino vacio o como HTML.");
       zip.file("instalador.sh", instalador);
-      zip.file("instalar-desde-github.sh", BOOTSTRAP);
       try {
         const r2 = await fetch("/source-manifest.json");
         const txt = await r2.text();
@@ -82,20 +81,6 @@ export default function Descarga() {
           }
         }
       } catch {}
-      zip.file(
-        "LEEME.txt",
-        "Sistema de Paginacion Hospitalaria POCSAG sobre VoIP\n" +
-          "===================================================\n\n" +
-          "OPCION 1 - Instalacion automatica desde GitHub (recomendado):\n" +
-          "  bash instalar-desde-github.sh\n" +
-          "  o en una linea:\n  curl -fsSL " +
-          RAW +
-          " | sudo bash\n\n" +
-          "OPCION 2 - Instalacion offline:\n  sudo bash instalador.sh\n\n" +
-          "Actualizar (preserva BD y configs):\n  sudo bash instalador.sh --update\n" +
-          "Reinstalar desde cero (backup en /tmp):\n  sudo bash instalador.sh --reset\n\n" +
-          "Paneles:\n  Publico: http://localhost:8080/\n  Admin: http://localhost:8080/admin\n"
-      );
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -105,7 +90,7 @@ export default function Descarga() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setOk("Descarga lista: pocsag-completo.zip con instalador + source + bootstrap de GitHub.");
+      setOk("Descarga lista: pocsag-completo.zip con instalador.sh + carpeta source/pocsag-server/.");
     } catch (e) {
       setError(e.message || String(e));
     } finally {

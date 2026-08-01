@@ -43,6 +43,20 @@ function rawTextFallback() {
         fs.writeFileSync(path.resolve(destDir, 'source-manifest.json'), JSON.stringify(manifest))
       } catch {}
     },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const u = (req.url || '').split('?')[0];
+        if (u === '/instalador.sh') {
+          try {
+            const c = fs.readFileSync(path.resolve(root, 'instalador.sh'));
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end(c);
+            return;
+          } catch (e) {}
+        }
+        next();
+      });
+    },
     resolveId(source) {
       if (!source || !source.startsWith('@/')) return null
       const stripped = source.replace(/[?#].*$/, '')
