@@ -1,37 +1,52 @@
-import React, { useState } from "react";
-import frontendHtml from "@/../public/frontend.html?raw";
-import appPy from "@/../public/app.py?raw";
-import dbManager from "@/../public/db_manager.py?raw";
+import React, { useState, useEffect } from "react";
 
 const FILES = [
   {
     nombre: "frontend/index.html",
     ruta: "/opt/pocsag-server/frontend/index.html",
-    codigo: frontendHtml,
+    url: "/frontend.html",
   },
   {
     nombre: "backend/app.py",
     ruta: "/opt/pocsag-server/backend/app.py",
-    codigo: appPy,
+    url: "/app.py",
   },
   {
     nombre: "database/db_manager.py",
     ruta: "/opt/pocsag-server/database/db_manager.py",
-    codigo: dbManager,
+    url: "/db_manager.py",
   },
 ];
 
 export default function Codigo() {
   const [activo, setActivo] = useState(0);
   const [copiado, setCopiado] = useState(false);
+  const [contenidos, setContenidos] = useState({});
+
+  useEffect(() => {
+    if (contenidos[activo] !== undefined) return;
+    let cancelled = false;
+    fetch(FILES[activo].url)
+      .then((r) => r.text())
+      .then((t) => {
+        if (!cancelled) setContenidos((c) => ({ ...c, [activo]: t }));
+      })
+      .catch(() => {
+        if (!cancelled) setContenidos((c) => ({ ...c, [activo]: "" }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activo, contenidos]);
 
   const copiar = async () => {
-    await navigator.clipboard.writeText(FILES[activo].codigo);
+    await navigator.clipboard.writeText(contenidos[activo] || "");
     setCopiado(true);
     setTimeout(() => setCopiado(false), 2000);
   };
 
   const f = FILES[activo];
+  const codigo = contenidos[activo] ?? "Cargando...";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
@@ -69,7 +84,7 @@ export default function Codigo() {
         </div>
 
         <pre className="bg-slate-900 border border-slate-800 rounded-lg p-4 overflow-auto text-xs leading-relaxed font-mono text-slate-300 max-h-[70vh]">
-          <code>{f.codigo}</code>
+          <code>{codigo}</code>
         </pre>
 
         <p className="text-slate-500 text-xs mt-4">

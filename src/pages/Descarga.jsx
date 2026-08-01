@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import JSZip from "jszip";
-import instaladorContent from "@/../instalador.sh?raw";
+import instaladorUrl from "@/../instalador.sh";
 
 // Carga el contenido de los archivos web de src/ en build-time.
 // Los .py/.sh/.html/.sql del pocsag-server ya van embebidos dentro de instalador.sh.
@@ -26,6 +26,7 @@ export default function Descarga() {
         n++;
       }
       // Instalador único en la raíz del zip
+      const instaladorContent = await fetch(instaladorUrl).then((r) => r.text());
       zip.file("instalador.sh", instaladorContent);
       setCount(n);
 

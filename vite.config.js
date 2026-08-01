@@ -39,5 +39,6 @@ export default defineConfig({
       visualEditAgent: true
     }),
     react()
-  ]
+  ],
+  assetsInclude: ['**/*.sh','**/*.py','**/*.html','**/*.sql','**/*.conf','**/*.service','**/*.txt','**/*.ini','**/*.toml','**/*.yaml','**/*.yml']
 });
