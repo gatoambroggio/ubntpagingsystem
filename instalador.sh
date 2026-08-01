@@ -12,6 +12,8 @@ set -euo pipefail
 APP_DIR="/opt/pocsag-server"
 AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
+UPDATE=0
+[[ "${1:-}" == "--update" ]] && UPDATE=1
 
 G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; NC="\033[0m"
 log()  { echo -e "${G}[OK]${NC}   $*"; }
@@ -26,22 +28,30 @@ mkdir -p "${LOG_FILE%/*}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
-echo "==> Instalando sistema POCSAG + FreePBX en ${APP_DIR}"
+if [[ $UPDATE -eq 1 ]]; then
+  echo "==> ACTUALIZACION RAPIDA (modo --update) en ${APP_DIR}"
+else
+  echo "==> Instalando sistema POCSAG + FreePBX en ${APP_DIR}"
+fi
 
 # ============================ 1. DEPENDENCIAS ================================
-echo "==> 1/10 Dependencias base..."
-apt-get update -y
-apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git \
-  libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
-  python3-dev build-essential libffi-dev wget
-# Codificador POCSAG: implementacion pura en Python (sin paquetes externos, ver encoder/pocsag_gen.py)
-# openpyxl para importar codigos desde planillas Excel (.xlsx)
-pip3 install --quiet --break-system-packages openpyxl 2>/dev/null || warn "openpyxl no instalado (importacion Excel solo admitira CSV)"
+if [[ $UPDATE -eq 0 ]]; then
+  echo "==> 1/10 Dependencias base..."
+  apt-get update -y
+  apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git \
+    libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
+    python3-dev build-essential libffi-dev wget
+  pip3 install --quiet --break-system-packages openpyxl 2>/dev/null || warn "openpyxl no instalado (importacion Excel solo admitira CSV)"
+else
+  echo "==> 1/10 Dependencias base (omitidas en --update)"
+fi
 
 # ============================ 2. ASTERISK (motor) ============================
 echo "==> 2/10 Motor Asterisk..."
-if ! command -v asterisk >/dev/null 2>&1; then
-  apt-get install -y asterisk || { err "No se pudo instalar Asterisk."; exit 1; }
+if [[ $UPDATE -eq 0 ]]; then
+  if ! command -v asterisk >/dev/null 2>&1; then
+    apt-get install -y asterisk || { err "No se pudo instalar Asterisk."; exit 1; }
+  fi
 fi
 AST_ETC="/etc/asterisk"
 mkdir -p /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds
@@ -81,11 +91,14 @@ instalar_freepbx(){
 echo "==> 3/10 FreePBX..."
 if command -v fwconsole >/dev/null 2>&1; then
   log "FreePBX detectado."; FREEPBX=1
-elif [[ "${INSTALL_FREEPBX:-0}" == "1" ]]; then
-  if instalar_freepbx; then FREEPBX=1; log "FreePBX instalado."; else warn "FreePBX no disponible. Integrando con Asterisk nativo."; fi
-else
-  warn "FreePBX no detectado. Se integra con Asterisk nativo."
-  warn "Para instalar FreePBX 17: sudo INSTALL_FREEPBX=1 bash instalador.sh  (o sigue los pasos al final)"
+fi
+if [[ $UPDATE -eq 0 ]]; then
+  if [[ "$FREEPBX" -eq 0 && "${INSTALL_FREEPBX:-0}" == "1" ]]; then
+    if instalar_freepbx; then FREEPBX=1; log "FreePBX instalado."; else warn "FreePBX no disponible. Integrando con Asterisk nativo."; fi
+  elif [[ "$FREEPBX" -eq 0 ]]; then
+    warn "FreePBX no detectado. Se integra con Asterisk nativo."
+    warn "Para instalar FreePBX 17: sudo INSTALL_FREEPBX=1 bash instalador.sh  (o sigue los pasos al final)"
+  fi
 fi
 
 # ============================ 4. ESTRUCTURA =================================
@@ -1465,6 +1478,7 @@ fi
 
 # ============================ 8. LOCUCIONES ===============================
 echo "==> 8/10 Locuciones IVR..."
+if [[ $UPDATE -eq 0 ]]; then
 gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
   espeak -v es -s 160 "$2" -w "${out%.gsm}.wav" 2>/dev/null && sox "${out%.gsm}.wav" -r 8000 -c 1 "$out" 2>/dev/null || warn "No se pudo generar $1"
   rm -f "${out%.gsm}.wav"; }
@@ -1478,6 +1492,9 @@ gen error-envio "Error de envio"
 sox -n -r 8000 -c 1 "${APP_DIR}/audio/beep.gsm" synth 0.2 sine 1000 2>/dev/null || warn "beep no generado"
 cp "${APP_DIR}"/audio/*.gsm /var/lib/asterisk/sounds/ 2>/dev/null || true
 chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/sounds 2>/dev/null || true
+else
+  echo "==> 8/10 Locuciones IVR (omitidas en --update)"
+fi
 
 # ============================ 9. SYSTEMD + LOGROTATE ======================
 echo "==> 9/10 Servicios + logrotate..."
@@ -1503,7 +1520,11 @@ echo "==> 10/10 Chequeo..."
 bash "${APP_DIR}/scripts/healthcheck.sh" || warn "Healthcheck reporto problemas"
 
 echo "--------------------------------------------"
-log "Instalacion completada en ${APP_DIR}"
+if [[ $UPDATE -eq 1 ]]; then
+  log "Actualizacion (--update) completada en ${APP_DIR}"
+else
+  log "Instalacion completada en ${APP_DIR}"
+fi
 cat <<EOF
 
   MODO: $([ "$FREEPBX" = "1" ] && echo "FreePBX" || echo "Asterisk nativo")

@@ -4,7 +4,7 @@ import instaladorContent from "@/../instalador.sh?raw";
 
 // Carga el contenido de los archivos web de src/ en build-time.
 // Los .py/.sh/.html/.sql del pocsag-server ya van embebidos dentro de instalador.sh.
-const srcFiles = import.meta.glob("/src/**/*.{js,jsx,ts,tsx,json,css,md}", {
+const srcFiles = import.meta.glob("/src/**/*.{js,jsx,ts,tsx,json,css,md,sh}", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -78,6 +78,17 @@ export default function Descarga() {
         <p className="text-xs text-slate-500 mt-2 text-center">
           Desinstalar luego: sudo /opt/pocsag-server/bin/uninstall.sh
         </p>
+        <div className="mt-6 border-t border-slate-800 pt-4">
+          <p className="text-sm text-slate-300 leading-relaxed">
+            <strong className="text-slate-100">Actualizacion rapida (sin reinstalar todo):</strong>{" "}
+            edita <code className="text-emerald-400">src/deploy.sh</code> con la
+            direccion de tu servidor y ejecuta{" "}
+            <code className="text-emerald-400">bash src/deploy.sh</code>. Sube
+            solo los cambios y preserva la base de datos. Ver{" "}
+            <code className="text-emerald-400">src/DEPLOY.md</code> para la guia
+            completa (incluye como funciona rsync).
+          </p>
+        </div>
       </div>
     </div>
   );
