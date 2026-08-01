@@ -11,8 +11,9 @@ function rawTextFallback() {
     name: 'raw-text-fallback',
     enforce: 'pre',
     load(id) {
-      if (!id || !id.includes('?raw')) return null
-      const filePath = id.split('?raw')[0]
+      if (!id) return null
+      const filePath = id.split('?raw')[0].replace(/[?#].*$/, '')
+      if (filePath.endsWith('/index.html')) return null
       const ext = filePath.split('.').pop()?.toLowerCase()
       if (!ext || !nonJs.includes(ext)) return null
       try {
