@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS extensiones (
 );
 CREATE TABLE IF NOT EXISTS bitacora (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  fecha_hora DATETIME DEFAULT CURRENT_TIMESTAMP,
+  fecha_hora DATETIME DEFAULT (datetime('now','localtime')),
   interno_origen TEXT,
   codigo TEXT,
   cap_code TEXT,
@@ -175,7 +175,7 @@ CREATE INDEX IF NOT EXISTS idx_grupos_codigo ON grupos(codigo);
 CREATE INDEX IF NOT EXISTS idx_extensiones_numero ON extensiones(numero);
 CREATE TABLE IF NOT EXISTS cola_envios (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  fecha_encola DATETIME DEFAULT CURRENT_TIMESTAMP,
+  fecha_encola DATETIME DEFAULT (datetime('now','localtime')),
   fecha_procesado DATETIME,
   codigo TEXT NOT NULL,
   cap_code TEXT,
@@ -213,7 +213,7 @@ CREATE INDEX IF NOT EXISTS idx_prog_prox ON envios_programados(proxima_ejecucion
 CREATE INDEX IF NOT EXISTS idx_prog_act ON envios_programados(activo);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  fecha_hora DATETIME DEFAULT CURRENT_TIMESTAMP,
+  fecha_hora DATETIME DEFAULT (datetime('now','localtime')),
   usuario TEXT,
   accion TEXT,
   entidad TEXT,
@@ -579,9 +579,9 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         ok=False; obs=str(e)[:200]
     with get_conn(db_path) as conn:
         if ok:
-            conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=CURRENT_TIMESTAMP, observaciones='' WHERE id=?",(item["id"],))
+            conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=datetime('now','localtime'), observaciones='' WHERE id=?",(item["id"],))
         else:
-            conn.execute("UPDATE cola_envios SET estado='error', fecha_procesado=CURRENT_TIMESTAMP, observaciones=? WHERE id=?",(obs,item["id"]))
+            conn.execute("UPDATE cola_envios SET estado='error', fecha_procesado=datetime('now','localtime'), observaciones=? WHERE id=?",(obs,item["id"]))
     if not ok:
         try: notificar_error("Error de envio POCSAG", f"Cola id={item['id']} codigo={item['codigo']} fallo: {obs}")
         except Exception: pass
