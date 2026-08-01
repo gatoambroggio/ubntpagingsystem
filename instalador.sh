@@ -188,6 +188,41 @@ CREATE TABLE IF NOT EXISTS cola_envios (
 );
 CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_envios(estado);
 CREATE INDEX IF NOT EXISTS idx_cola_fecha ON cola_envios(fecha_encola);
+CREATE TABLE IF NOT EXISTS plantillas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL,
+  mensaje TEXT NOT NULL,
+  categoria TEXT DEFAULT 'general',
+  activo INTEGER DEFAULT 1,
+  orden INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS envios_programados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  codigo TEXT NOT NULL,
+  mensaje TEXT NOT NULL,
+  origen TEXT DEFAULT 'web',
+  tipo TEXT DEFAULT 'unico',
+  fecha_programada DATETIME,
+  recurrencia_dia INTEGER DEFAULT 0,
+  recurrencia_hora TEXT DEFAULT '08:00',
+  proxima_ejecucion DATETIME,
+  activo INTEGER DEFAULT 1,
+  ultima_ejecucion DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_prog_prox ON envios_programados(proxima_ejecucion);
+CREATE INDEX IF NOT EXISTS idx_prog_act ON envios_programados(activo);
+CREATE TABLE IF NOT EXISTS auditoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fecha_hora DATETIME DEFAULT CURRENT_TIMESTAMP,
+  usuario TEXT,
+  accion TEXT,
+  entidad TEXT,
+  entidad_id TEXT,
+  detalle TEXT,
+  ip TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_aud_fecha ON auditoria(fecha_hora);
+CREATE INDEX IF NOT EXISTS idx_aud_entidad ON auditoria(entidad);
 EOF
 
 # --- database/seed.sql ---
@@ -226,6 +261,12 @@ INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES
 INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion) VALUES
  ('101','CAMBIAR_PASSWORD_101','pocsag-incoming','Prueba Zoiper'),
  ('2184','CAMBIAR_PASSWORD_2184','pocsag-incoming','Linea entrante POCSAG');
+
+INSERT OR IGNORE INTO plantillas (nombre,mensaje,categoria,orden) VALUES
+ ('Codigo Azul','CODIGO AZUL - Emergencia medica - Concurrir de inmediato','emergencia',1),
+ ('Codigo Rojo','CODIGO ROJO - Emergencia - Concurrir de inmediato','emergencia',2),
+ ('Guardia Medica','Llamado a Guardia Medica - Concurrir','general',3),
+ ('Reunion','Convocatoria a reunion - Sala de reuniones','general',4);
 EOF
 
 # --- database/db_manager.py ---
@@ -589,9 +630,136 @@ def enviar_email(to, subject, body, attachment_path=None, db_path=DEFAULT_DB):
         return {"ok":True}
     except Exception as e: return {"error":str(e)}
 
+def listar_plantillas(db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM plantillas ORDER BY orden,categoria,nombre")]
+
+def crear_plantilla(data, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        cur=conn.execute("INSERT INTO plantillas (nombre,mensaje,categoria,orden,activo) VALUES (?,?,?,?,1)",
+            (data["nombre"],data["mensaje"],data.get("categoria","general"),data.get("orden",0)))
+        return cur.lastrowid
+
+def actualizar_plantilla(pid, data, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE plantillas SET nombre=?,mensaje=?,categoria=?,orden=?,activo=? WHERE id=?",
+            (data["nombre"],data["mensaje"],data.get("categoria","general"),data.get("orden",0),int(data.get("activo",1)),pid))
+
+def borrar_plantilla(pid, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM plantillas WHERE id=?",(pid,))
+
+def listar_programados(db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM envios_programados ORDER BY proxima_ejecucion")]
+
+def crear_programado(data, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        cur=conn.execute("INSERT INTO envios_programados (codigo,mensaje,origen,tipo,fecha_programada,recurrencia_dia,recurrencia_hora,proxima_ejecucion,activo) VALUES (?,?,?,?,?,?,?,?,1)",
+            (data["codigo"],data["mensaje"],data.get("origen","web"),data.get("tipo","unico"),
+             data.get("fecha_programada"),int(data.get("recurrencia_dia",0)),data.get("recurrencia_hora","08:00"),
+             data.get("fecha_programada") or data.get("proxima_ejecucion")))
+        return cur.lastrowid
+
+def actualizar_programado(pid, data, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE envios_programados SET codigo=?,mensaje=?,tipo=?,fecha_programada=?,recurrencia_dia=?,recurrencia_hora=?,proxima_ejecucion=?,activo=? WHERE id=?",
+            (data["codigo"],data["mensaje"],data.get("tipo","unico"),data.get("fecha_programada"),
+             int(data.get("recurrencia_dia",0)),data.get("recurrencia_hora","08:00"),
+             data.get("fecha_programada") or data.get("proxima_ejecucion"),int(data.get("activo",1)),pid))
+
+def borrar_programado(pid, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM envios_programados WHERE id=?",(pid,))
+
+def procesar_programados(db_path=DEFAULT_DB):
+    import datetime
+    now=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn(db_path) as conn:
+        rows=conn.execute("SELECT * FROM envios_programados WHERE activo=1 AND proxima_ejecucion<=? ORDER BY proxima_ejecucion",(now,)).fetchall()
+    procesados=[]
+    for r in rows:
+        r=dict(r)
+        qid=encolar_mensaje(r["codigo"],None,r["mensaje"],1200,r["origen"] or "programado",db_path)
+        # resolver caps reales
+        dest=resolver_destino(r["codigo"],db_path)
+        if dest:
+            with get_conn(db_path) as conn:
+                conn.execute("UPDATE cola_envios SET cap_code=? WHERE id=?",(dest[0],qid))
+        proxima=None
+        if r["tipo"]=="diario":
+            proxima=(datetime.datetime.now()+datetime.timedelta(days=1)).strftime(f"%Y-%m-%d {r['recurrencia_hora'] or '08:00'}:00")
+        elif r["tipo"]=="semanal":
+            proxima=(datetime.datetime.now()+datetime.timedelta(weeks=1)).strftime(f"%Y-%m-%d {r['recurrencia_hora'] or '08:00'}:00")
+        elif r["tipo"]=="mensual":
+            import calendar
+            d=datetime.datetime.now()
+            nm=d.month+1 if d.month<12 else 1
+            ny=d.year if d.month<12 else d.year+1
+            _,last=calendar.monthrange(ny,nm)
+            dia=min(r["recurrencia_dia"] or 1,last)
+            proxima=f"{ny}-{nm:02d}-{dia:02d} {r['recurrencia_hora'] or '08:00'}:00"
+        else:
+            proxima=None
+        with get_conn(db_path) as conn:
+            if proxima:
+                conn.execute("UPDATE envios_programados SET ultima_ejecucion=?,proxima_ejecucion=? WHERE id=?",(now,proxima,r["id"]))
+            else:
+                conn.execute("UPDATE envios_programados SET ultima_ejecucion=?,activo=0 WHERE id=?",(now,r["id"]))
+        procesados.append(r["id"])
+    return procesados
+
+def registrar_auditoria(usuario, accion, entidad, entidad_id, detalle, ip="", db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("INSERT INTO auditoria (usuario,accion,entidad,entidad_id,detalle,ip) VALUES (?,?,?,?,?,?)",
+            (usuario or "sistema",accion,entidad,str(entidad_id or ""),detalle or "",ip or ""))
+
+def listar_auditoria(limit=200, offset=0, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        rows=[dict(r) for r in conn.execute("SELECT * FROM auditoria ORDER BY id DESC LIMIT ? OFFSET ?",(limit,offset))]
+        total=conn.execute("SELECT COUNT(*) AS c FROM auditoria").fetchone()["c"]
+    return {"rows":rows,"total":total}
+
+def estadisticas(db_path=DEFAULT_DB):
+    import datetime
+    with get_conn(db_path) as conn:
+        hoy=datetime.date.today().isoformat()
+        hace30=(datetime.date.today()-datetime.timedelta(days=30)).isoformat()
+        por_dia=[dict(r) for r in conn.execute(
+            "SELECT date(fecha_hora) AS dia, COUNT(*) AS total, SUM(CASE WHEN estado='enviado' THEN 1 ELSE 0 END) AS ok, SUM(CASE WHEN estado='error' THEN 1 ELSE 0 END) AS err FROM bitacora WHERE fecha_hora>=? GROUP BY date(fecha_hora) ORDER BY dia",(hace30,))]
+        por_hora=[dict(r) for r in conn.execute(
+            "SELECT strftime('%H',fecha_hora) AS hora, COUNT(*) AS total FROM bitacora WHERE date(fecha_hora)=? GROUP BY strftime('%H',fecha_hora) ORDER BY hora",(hoy,))]
+        top_pagers=[dict(r) for r in conn.execute(
+            "SELECT codigo, COUNT(*) AS total FROM bitacora WHERE fecha_hora>=? GROUP BY codigo ORDER BY total DESC LIMIT 10",(hace30,))]
+        total_env=conn.execute("SELECT COUNT(*) AS c FROM bitacora").fetchone()["c"]
+        total_ok=conn.execute("SELECT COUNT(*) AS c FROM bitacora WHERE estado='enviado'").fetchone()["c"]
+        total_err=conn.execute("SELECT COUNT(*) AS c FROM bitacora WHERE estado='error'").fetchone()["c"]
+        cola=estado_cola(db_path)
+    return {"por_dia":por_dia,"por_hora":por_hora,"top_pagers":top_pagers,
+            "total_enviados":total_env,"total_ok":total_ok,"total_err":total_err,"cola":cola}
+
+def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
+    paths={"asterisk":"/var/log/asterisk/messages","api":"/opt/pocsag-server/logs/pocsag.log",
+           "cola":"/opt/pocsag-server/logs/cola.log","backup":"/opt/pocsag-server/logs/backup.log",
+           "health":"/opt/pocsag-server/logs/health.log","install":"/var/log/pocsag-install.log"}
+    path=paths.get(tipo)
+    if not path or not os.path.exists(path): return {"lineas":[],"path":path or "desconocido"}
+    try:
+        with open(path,"r",errors="replace") as f:
+            lineas=f.readlines()[-limit:]
+        return {"lineas":[l.rstrip() for l in lineas],"path":path}
+    except Exception as e:
+        return {"lineas":[],"path":path,"error":str(e)}
+
+def notificar_error(asunto, cuerpo, db_path=DEFAULT_DB):
+    email=get_config("backup_email","",db_path)
+    if not email: return {"error":"no hay email configurado"}
+    return enviar_email(email,asunto,cuerpo,db_path=db_path)
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv)>1 and sys.argv[1]=="init": init_db(); print("Base de datos inicializada.")
+    if len(sys.argv)>2 and sys.argv[2]=="seed": print("seed ok")
 EOF
 mkx "${APP_DIR}/database/db_manager.py"
 
@@ -1071,7 +1239,10 @@ from database.db_manager import (listar_pagers, buscar_pagers, crear_pager, actu
     listar_extensiones, crear_extension, actualizar_extension, borrar_extension, generar_pjsip_conf,
     all_config, set_config, historial, enviar_mensaje, login_validar, verificar_token, cerrar_sesion,
     listar_cola, estado_cola, reintentar_cola, limpiar_cola, procesar_siguiente_cola,
-    backup_db, restore_db, enviar_email)
+    backup_db, restore_db, enviar_email,
+    listar_plantillas, crear_plantilla, actualizar_plantilla, borrar_plantilla,
+    listar_programados, crear_programado, actualizar_programado, borrar_programado,
+    registrar_auditoria, listar_auditoria, estadisticas, leer_logs, notificar_error)
 
 HOST=os.environ.get("POCSAG_API_HOST","0.0.0.0")
 PORT=int(os.environ.get("POCSAG_API_PORT","8080"))
@@ -1168,6 +1339,14 @@ class H(BaseHTTPRequestHandler):
         if not self._auth():
             jr(self,{"error":"no autorizado"},401); return False
         return True
+    def _audit(self, accion, entidad, eid, detalle):
+        try:
+            a=self.headers.get("Authorization","")
+            tok=a[7:].strip() if a.startswith("Bearer ") else ""
+            usuario="admin" if tok else "anonimo"
+            ip=self.client_address[0] if self.client_address else ""
+            registrar_auditoria(usuario,accion,entidad,eid,detalle,ip)
+        except Exception: pass
     def serve_file(self, fn, ctype):
         f=os.path.join(FRONT, fn)
         if os.path.exists(f):
@@ -1234,6 +1413,22 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             except Exception as e: return jr(self,{"error":str(e)},500)
             return
+        if p=="/api/plantillas":
+            return jr(self, listar_plantillas())
+        if p=="/api/programados":
+            if not self._guard(): return
+            return jr(self, listar_programados())
+        if p=="/api/auditoria":
+            if not self._guard(): return
+            limit=min(int(q.get("limit",["200"])[0] or 200),1000); offset=int(q.get("offset",["0"])[0] or 0)
+            return jr(self, listar_auditoria(limit,offset))
+        if p=="/api/stats":
+            if not self._guard(): return
+            return jr(self, estadisticas())
+        if p=="/api/logs":
+            if not self._guard(): return
+            tipo=q.get("tipo",["api"])[0]; limit=min(int(q.get("limit",["200"])[0] or 200),1000)
+            return jr(self, leer_logs(tipo,limit))
         self.send_response(404); self.end_headers()
     def do_POST(self):
         p=self.path
@@ -1250,10 +1445,14 @@ class H(BaseHTTPRequestHandler):
                 return jr(self, enviar_mensaje(data.get("codigo",""),data.get("mensaje",""),data.get("origen","web")))
             if p=="/api/pagers":
                 if not self._guard(): return
-                return jr(self,{"id":crear_pager(read_body(self))})
+                d=read_body(self); pid=crear_pager(d)
+                self._audit("crear","pager",pid,f"codigo={d.get('codigo')}")
+                return jr(self,{"id":pid})
             if p=="/api/grupos":
                 if not self._guard(): return
-                return jr(self,{"id":crear_grupo(read_body(self))})
+                d=read_body(self); gid=crear_grupo(d)
+                self._audit("crear","grupo",gid,f"codigo={d.get('codigo')}")
+                return jr(self,{"id":gid})
             if p=="/api/pagers/import":
                 if not self._guard(): return
                 ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
@@ -1270,7 +1469,19 @@ class H(BaseHTTPRequestHandler):
                 return jr(self, importar_grupos(rows))
             if p=="/api/extensions":
                 if not self._guard(): return
-                return jr(self,{"id":crear_extension(read_body(self))})
+                d=read_body(self); eid=crear_extension(d)
+                self._audit("crear","extension",eid,f"numero={d.get('numero')}")
+                return jr(self,{"id":eid})
+            if p=="/api/plantillas":
+                if not self._guard(): return
+                d=read_body(self); pid=crear_plantilla(d)
+                self._audit("crear","plantilla",pid,f"nombre={d.get('nombre')}")
+                return jr(self,{"id":pid})
+            if p=="/api/programados":
+                if not self._guard(): return
+                d=read_body(self); pid=crear_programado(d)
+                self._audit("crear","programado",pid,f"codigo={d.get('codigo')}")
+                return jr(self,{"id":pid})
             if p=="/api/extensions/aplicar":
                 if not self._guard(): return
                 if not generar_pjsip_conf(): return jr(self,{"error":"no se pudo escribir /etc/asterisk/pjsip_pocsag.conf (permisos)"},400)
@@ -1323,17 +1534,24 @@ class H(BaseHTTPRequestHandler):
             if parts[1]=="api" and parts[2]=="pagers" and len(parts)>3:
                 if not self._guard(): return
                 if len(parts)>4 and parts[4]=="estado":
-                    toggle_pager(int(parts[3]),data.get("activo",1)); return jr(self,{"ok":True})
-                actualizar_pager(int(parts[3]),data); return jr(self,{"ok":True})
+                    toggle_pager(int(parts[3]),data.get("activo",1)); self._audit("editar","pager",parts[3],f"activo={data.get('activo')}"); return jr(self,{"ok":True})
+                actualizar_pager(int(parts[3]),data); self._audit("editar","pager",parts[3],f"codigo={data.get('codigo')}"); return jr(self,{"ok":True})
             if parts[1]=="api" and parts[2]=="grupos" and len(parts)>3:
                 if not self._guard(): return
-                actualizar_grupo(int(parts[3]),data); return jr(self,{"ok":True})
+                actualizar_grupo(int(parts[3]),data); self._audit("editar","grupo",parts[3],f"codigo={data.get('codigo')}"); return jr(self,{"ok":True})
             if parts[1]=="api" and parts[2]=="extensiones" and len(parts)>3:
                 if not self._guard(): return
-                actualizar_extension(int(parts[3]),data); return jr(self,{"ok":True})
+                actualizar_extension(int(parts[3]),data); self._audit("editar","extension",parts[3],f"numero={data.get('numero')}"); return jr(self,{"ok":True})
+            if parts[1]=="api" and parts[2]=="plantillas" and len(parts)>3:
+                if not self._guard(): return
+                actualizar_plantilla(int(parts[3]),data); self._audit("editar","plantilla",parts[3],f"nombre={data.get('nombre')}"); return jr(self,{"ok":True})
+            if parts[1]=="api" and parts[2]=="programados" and len(parts)>3:
+                if not self._guard(): return
+                actualizar_programado(int(parts[3]),data); self._audit("editar","programado",parts[3],f"codigo={data.get('codigo')}"); return jr(self,{"ok":True})
             if parts[1]=="api" and parts[2]=="config":
                 if not self._guard(): return
                 for k,v in data.items(): set_config(k,str(v))
+                self._audit("editar","config","-",f"claves={list(data.keys())}")
                 return jr(self,{"ok":True})
             self.send_response(404); self.end_headers()
         except Exception as e: return jr(self,{"error":str(e)},400)
