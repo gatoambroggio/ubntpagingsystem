@@ -13,7 +13,7 @@ AST_USER="asterisk"
 LOG_FILE="/var/log/pocsag-install.log"
 UPDATE=0
 RESET=0
-VERSION="1.0"
+VERSION="1.01"
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 [[ "${1:-}" == "--reset" ]] && RESET=1
 
@@ -245,7 +245,8 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('smtp_pass',''),
  ('smtp_from',''),
  ('smtp_secure','tls'),
- ('backup_email','');
+ ('backup_email',''), ('backup_frecuencia','none'),
+ ('backup_hora','03:00'), ('backup_dia','1'), ('backup_email_enable','0');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES
  ('10','00002020','Juan','Perez','Guardia Medica',1200,'Medico de guardia'),
@@ -1284,6 +1285,15 @@ DB="/opt/pocsag-server/database/pocsag.db"
 BACKUP_DIR="/opt/pocsag-server/database/backups"
 DIAS="${1:-7}"
 mkdir -p "$BACKUP_DIR"
+python3 - <<'PYEOF'
+import sys,datetime; sys.path.insert(0,'/opt/pocsag-server')
+from database.db_manager import get_config,set_config
+f=get_config("backup_frecuencia","none");h=get_config("backup_hora","03:00");d=int(get_config("backup_dia","1") or 1);n=datetime.datetime.now();t=n.strftime("%Y-%m-%d");u=get_config("backup_ultima","")[:10]
+p=n.hour>int(h[:2]) or (n.hour==int(h[:2]) and n.minute>=int(h[3:5]))
+if f!="none" and t!=u and p and (f=="diario" or (f=="semanal" and n.weekday()==d) or (f=="mensual" and n.day==d)): set_config("backup_ultima",n.strftime("%Y-%m-%d %H:%M:%S"))
+else: open("/tmp/.pocsag_skip","w").write("1")
+PYEOF
+if [[ -f /tmp/.pocsag_skip ]]; then rm -f /tmp/.pocsag_skip; exit 0; fi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup automatico iniciado" >> /opt/pocsag-server/logs/backup.log
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP="$BACKUP_DIR/pocsag_backup_${TS}.db"
@@ -1293,7 +1303,7 @@ python3 -c "
 import sys; sys.path.insert(0,'/opt/pocsag-server')
 from database.db_manager import enviar_email, get_config
 email=get_config('backup_email','')
-if email:
+if email and get_config('backup_email_enable','1')=='1':
     r=enviar_email(email,'Backup automatico POCSAG','Backup de base de datos adjunto.','$BACKUP')
     if 'error' in r:
         with open('/opt/pocsag-server/logs/backup.log','a') as f: f.write(f'[EMAIL ERROR] {r}\n')
@@ -1810,7 +1820,7 @@ tbody tr:hover{background:rgba(20,184,166,.05)}
 <div class="topbar">
   <div class="brand"><div class="logo">🧭</div><div>POCSAG<small>paginacion hospitalaria</small></div></div>
   <span id="h" class="pill"><span class="dot"></span> en linea</span>
-  <span id="ver" class="badge mut" style="margin-left:auto">v1.0</span>
+  <span id="ver" class="badge mut" style="margin-left:auto">v1.01</span>
 </div>
 <div class="tabs">
   <button class="active" onclick="tab('enviar',this)">📨 Enviar mensaje</button>
@@ -2041,7 +2051,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
   <div class="content">
-    <div class="topbar"><h1 id="tit">Pagers</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.0</span></div>
+    <div class="topbar"><h1 id="tit">Pagers</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.01</span></div>
     <div class="tab" id="t-enviar"><div class="card"><h2>📨 Enviar mensaje</h2>
       <div class="field"><label>Buscar destinatario (nombre, codigo o area)</label>
       <div style="position:relative"><input id="s_q" autocomplete="off" placeholder="Escriba para buscar..."><ul id="s_list" style="position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:var(--panel2);border:1px solid var(--line);border-radius:10px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none"></ul></div></div>
@@ -2108,8 +2118,10 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="drop" id="dropDB"><input type="file" id="ifileDB" accept=".db" style="display:none"><div id="dftxtDB">Arrastre un archivo .db o haga click para restaurar</div></div>
       <div style="margin-top:1rem"><button class="btn btn-del" id="impbtnDB" onclick="dbRestore()" disabled>Restaurar desde archivo</button></div>
       <div id="db_res" class="toast"></div></div>
-      <div class="card"><h2>Backup automatico</h2>
-      <p style="color:var(--mut);font-size:.85rem;margin-top:0">Se realiza un backup automatico diario a las 3 AM. Los backups se guardan en /opt/pocsag-server/database/backups/ y se eliminan despues de 7 dias. Configure el email destino en Parametros para recibir copias por mail.</p></div></div>
+      <div class="card"><h2>🗓 Programar backup automatico</h2>
+      <div class="row"><div><label>Frecuencia</label><select id="c_backup_frecuencia"><option value="none">No automatico</option><option value="diario">Diario</option><option value="semanal">Semanal</option><option value="mensual">Mensual</option></select></div><div><label>Hora</label><input id="c_backup_hora" type="time" value="03:00"></div><div><label>Dia (sem 0=Dom-6 / mens 1-31)</label><input id="c_backup_dia" type="number" min="0" max="31" value="1"></div></div>
+      <label style="display:flex;align-items:center;gap:.4rem;margin:.6rem 0"><input type="checkbox" id="c_backup_email_enable" style="width:auto"> Enviar tambien por email (a la direccion de Parametros)</label>
+      <button class="btn btn-pri" onclick="saveBackupCfg()">Guardar programacion</button><div id="bk_res" class="toast"></div></div></div>
     <div class="tab" id="t-dash"><div class="card"><h2>📊 Estadisticas del sistema</h2>
       <div id="dash_stats" style="display:flex;gap:.8rem;flex-wrap:wrap;margin-bottom:1.2rem"></div>
       <div class="card" style="background:var(--panel2);margin-bottom:1rem"><h3 style="font-size:.9rem;margin:0 0 .6rem">Mensajes por dia (ultimos 30 dias)</h3><canvas id="chart_dia" height="120"></canvas></div>
@@ -2247,7 +2259,8 @@ async function dbBackupEmail(){const t=document.getElementById('db_res');t.class
 let dbFile=null;const dropDB=document.getElementById('dropDB'),ifileDB=document.getElementById('ifileDB'),dftxtDB=document.getElementById('dftxtDB');
 if(dropDB){dropDB.addEventListener('click',()=>ifileDB.click());ifileDB.addEventListener('change',e=>{dbFile=e.target.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});['dragover','dragenter'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.add('hover');}));['dragleave','drop'].forEach(ev=>dropDB.addEventListener(ev,e=>{e.preventDefault();dropDB.classList.remove('hover');}));dropDB.addEventListener('drop',e=>{dbFile=e.dataTransfer.files[0];dftxtDB.textContent=dbFile.name;document.getElementById('impbtnDB').disabled=false;});}
 async function dbRestore(){if(!dbFile)return;if(!confirm('ATENCION: Esto reemplaza la base de datos actual. Asegurese de tener un backup. Continuar?'))return;const buf=await dbFile.arrayBuffer();const t=document.getElementById('db_res');t.className='toast show ok';t.textContent='Restaurando...';const r=await fetch('/api/db/restore',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN},body:buf}).then(r=>r.json());if(r.ok){t.className='toast show ok';t.textContent='Base restaurada. Backup previo: '+r.backup;}else{t.className='toast show err';t.textContent='Error: '+(r.error||'no se pudo restaurar');}}
-function loadBD(){}
+async function loadBD(){try{const c=await api('GET','/api/config');['backup_frecuencia','backup_hora','backup_dia'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});const e=document.getElementById('c_backup_email_enable');if(e)e.checked=(c.backup_email_enable=='1');}catch(e){}}
+async function saveBackupCfg(){await api('PUT','/api/config',{backup_frecuencia:document.getElementById('c_backup_frecuencia').value,backup_hora:document.getElementById('c_backup_hora').value,backup_dia:document.getElementById('c_backup_dia').value,backup_email_enable:document.getElementById('c_backup_email_enable').checked?'1':'0'});const t=document.getElementById('bk_res');t.className='toast show ok';t.textContent='Programacion guardada';setTimeout(()=>t.className='toast',2500);}
 // SMTP
 async function smtpTest(){const def=(document.getElementById('c_backup_email')||{}).value||'';const email=prompt('Email destino para la prueba:',def);if(!email)return;const t=document.getElementById('cfg_res');t.className='toast';t.textContent='Probando SMTP...';t.className='toast show';try{const r=await api('POST','/api/smtp/test',{email:email});if(r&&r.ok){t.className='toast show ok';t.textContent='Email de prueba enviado a '+email+'. Revisa bandeja y spam.';}else{let m=(r&&r.error)||'no se pudo enviar';if(/auth|login|password|535|534/i.test(m))m+=' -- Si usas Gmail crea una App Password (no sirve la clave comun).';t.className='toast show err';t.textContent='Error: '+m;}}catch(e){t.className='toast show err';t.textContent='Error: '+e;}loadSmtpLog();}
 async function loadSmtpLog(){const p=document.getElementById('smtp_log');if(!p)return;try{const r=await api('GET','/api/smtp/log');p.textContent=(r.lines&&r.lines.length)?r.lines.join('\n'):'- sin registros todavia -';p.scrollTop=p.scrollHeight;}catch(e){p.textContent='Error: '+e;}}
@@ -2276,7 +2289,7 @@ let curLogType='api';async function loadLogs(tipo){curLogType=tipo;const r=await
 // Auditoria
 async function loadAud(){const r=await api('GET','/api/auditoria?limit=200');document.getElementById('tb_aud').innerHTML=(r.rows||[]).map(x=>`<tr><td>${x.fecha_hora}</td><td>${x.usuario||''}</td><td>${x.accion||''}</td><td>${x.entidad||''}</td><td>${x.entidad_id||''}</td><td>${(x.detalle||'').slice(0,50)}</td><td>${x.ip||''}</td></tr>`).join('')||`<tr><td colspan="7" style="color:var(--mut);text-align:center;padding:1rem">Sin registros de auditoria</td></tr>`;}
 checkTok();applyTheme();health();setInterval(health,20000);loadVersion();
-const CHANGELOG=[['1.0','Version inicial: panel publico y admin, cola de envios, envios programados, plantillas, dashboard, visor de logs, auditoria, modulo de diseno, gestion PBX, backups por email y sistema de versiones.']];
+const CHANGELOG=[['1.01','Programacion de backups (diario/semanal/mensual) desde el panel, con envio por email opcional. Soporte importar .xls. Logs de cola/scheduler/backup. Instalador Raspberry Pi.'],['1.0','Version inicial: panel publico y admin, cola de envios, envios programados, plantillas, dashboard, visor de logs, auditoria, modulo de diseno, gestion PBX, backups por email y sistema de versiones.']];
 function loadChangelog(){const el=document.getElementById('changelog');if(el)el.innerHTML=CHANGELOG.map(([v,t])=>`<div style="margin-bottom:.6rem"><b style="color:var(--acc)">v${v}</b><br>${t}</div>`).join('');}
 async function loadVersion(){try{const v=await fetch('/api/version').then(r=>r.json());const el=document.getElementById('ver');if(el)el.textContent='v'+(v.version||'1.0');}catch(e){}}
 </script>
@@ -2420,7 +2433,7 @@ cat > /etc/cron.d/pocsag-cleanup <<'EOF'
 EOF
 chmod 644 /etc/cron.d/pocsag-cleanup
 cat > /etc/cron.d/pocsag-backup <<'EOF'
-0 3 * * * root /opt/pocsag-server/scripts/backup_auto.sh 7 >/dev/null 2>&1
+*/10 * * * * root /opt/pocsag-server/scripts/backup_auto.sh 7 >/dev/null 2>&1
 EOF
 chmod 644 /etc/cron.d/pocsag-backup
 systemctl daemon-reload
