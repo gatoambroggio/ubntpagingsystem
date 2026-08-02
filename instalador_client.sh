@@ -2,23 +2,28 @@
 # ============================================================================
 # instalador_client.sh - Sistema POCSAG variante CLIENTE (v1.0client)
 # ============================================================================
-# Registra 4 internos (3000-3003) contra la central VoIP del hospital.
-# Cuando el hospital marca 177 (enrutado a uno de los 4), dispara el IVR POCSAG.
+# Registra internos (3000-3003 etc.) contra la central VoIP del hospital.
+# Cuando el hospital marca uno de esos internos, el IVR POCSAG contesta.
 #
-# Uso (desde GitHub, una linea):
+# Arquitectura: instala la base con instalador.sh y luego REEMPLAZA (no parchea)
+# app.py y admin.html con versiones cliente standalone que ya incluyen
+# generar_pjsip_hospital_conf() y estado_registros_api() nativos.
+#
+# Uso (una linea desde GitHub):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash
 #
 # Actualizar solo la config cliente (sin reinstalar la base):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash -s -- --update
 #
 # DESPUES DE INSTALAR: desde el panel admin -> Parametros -> cargar la IP real
-# del hospital y las claves de cada interno en Extensiones -> Aplicar a Asterisk.
+# del hospital -> Extensiones -> editar claves -> Aplicar a Asterisk.
 # ============================================================================
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main"
 AST_ETC="/etc/asterisk"
-DB="/opt/pocsag-server/database/pocsag.db"
+APP_DIR="/opt/pocsag-server"
+DB="${APP_DIR}/database/pocsag.db"
 VERSION="1.0client"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
@@ -30,42 +35,45 @@ err(){ echo -e "${R}[ERR]${NC}  $*" >&2; }
 
 [[ $EUID -ne 0 ]] && { err "Ejecuta como root o con sudo."; exit 1; }
 
+dl(){ # dl <url> <dest>
+  if ! curl -fsSL "$1" -o "$2"; then err "No se pudo descargar $1"; exit 1; fi
+}
+
 # ============================ 1. SISTEMA BASE ================================
 if [[ $UPDATE -eq 0 ]]; then
-  echo "==> 1/5 Instalando sistema base POCSAG (servidor autonomo)..."
+  echo "==> 1/6 Instalando sistema base POCSAG (servidor autonomo)..."
   TMP="$(mktemp -d)"
-  if ! curl -fsSL "${REPO}/instalador.sh" -o "$TMP/instalador.sh"; then
-    err "No se pudo descargar instalador.sh desde GitHub."; exit 1
-  fi
+  dl "${REPO}/instalador.sh" "$TMP/instalador.sh"
   bash "$TMP/instalador.sh"
   rm -rf "$TMP"
 else
-  echo "==> 1/5 Modo --update: se saltea la instalacion base."
+  echo "==> 1/6 Modo --update: se saltea la instalacion base."
 fi
 
-# ============================ 2. PATCH APP + ADMIN ===========================
-echo "==> 2/5 Parcheando app.py y admin.html (modo cliente)..."
-TMP="$(mktemp -d)"
-if ! curl -fsSL "${REPO}/src/pocsag-server-client/scripts/patch_client.py" -o "$TMP/patch_client.py"; then
-  err "No se pudo descargar patch_client.py"; exit 1
-fi
-python3 "$TMP/patch_client.py"
-# Hotfix: corregir parser de estado de registro SIP (bug que muestra todo en rojo)
-curl -fsSL "${REPO}/src/pocsag-server-client/scripts/fix_status.py" -o "$TMP/fix_status.py" 2>/dev/null && python3 "$TMP/fix_status.py" 2>/dev/null || true
-rm -rf "$TMP"
+# ============================ 2. REEMPLAZAR APP.PY ===========================
+echo "==> 2/6 Reemplazando app.py con version cliente (v${VERSION})..."
+dl "${REPO}/src/pocsag-server-client/backend/app.py" "${APP_DIR}/backend/app.py"
+chmod +x "${APP_DIR}/backend/app.py"
 
-# ============================ 3. CONFIG CLIENTE ==============================
-echo "==> 3/5 Descargando configuracion cliente (v${VERSION})..."
+# ============================ 3. REEMPLAZAR ADMIN.HTML ======================
+echo "==> 3/6 Reemplazando admin.html con version cliente..."
+dl "${REPO}/src/pocsag-server-client/frontend/admin.html" "${APP_DIR}/frontend/admin.html"
+
+# ============================ 4. CONFIG ASTERISK ============================
+echo "==> 4/6 Descargando configuracion Asterisk cliente..."
 mkdir -p "$AST_ETC"
-if ! curl -fsSL "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" -o "${AST_ETC}/pjsip_hospital.conf"; then
-  err "No se pudo descargar pjsip_hospital.conf"; exit 1
-fi
-if ! curl -fsSL "${REPO}/src/pocsag-server-client/asterisk/extensions_hospital.conf" -o "${AST_ETC}/extensions_hospital.conf"; then
-  err "No se pudo descargar extensions_hospital.conf"; exit 1
-fi
+# Dialplan autocontenido (IVR incluido, no depende de extensions_pocsag.conf)
+dl "${REPO}/src/pocsag-server-client/asterisk/extensions_hospital.conf" "${AST_ETC}/extensions_hospital.conf"
+# pjsip_hospital.conf se genera desde el panel admin (generar_pjsip_hospital_conf)
+# pero dejamos un template inicial con placeholders
+dl "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" "${AST_ETC}/pjsip_hospital.conf"
 
-# ============================ 4. MIGRACION BD ================================
-echo "==> 4/5 Migrando base a modo cliente (internos 3000-3003)..."
+# Incluir desde extensions.conf y pjsip.conf si no estan ya
+grep -q 'extensions_hospital.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_hospital.conf' >> "${AST_ETC}/extensions.conf"
+grep -q 'pjsip_hospital.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_hospital.conf' >> "${AST_ETC}/pjsip.conf"
+
+# ============================ 5. MIGRACION BD ================================
+echo "==> 5/6 Migrando base a modo cliente (internos 3000-3003)..."
 python3 - <<PYEOF
 import sqlite3
 c = sqlite3.connect('${DB}')
@@ -82,15 +90,13 @@ c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSIO
 c.commit(); c.close()
 PYEOF
 
-# Incluir pjsip_hospital.conf y extensions_hospital.conf
-grep -q 'pjsip_hospital.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_hospital.conf' >> "${AST_ETC}/pjsip.conf"
-grep -q 'extensions_hospital.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_hospital.conf' >> "${AST_ETC}/extensions.conf"
-
-# ============================ 5. RELOAD =====================================
-echo "==> 5/5 Recargando Asterisk..."
+# ============================ 6. RELOAD =====================================
+echo "==> 6/6 Recargando servicios..."
+chown -R asterisk:asterisk "${APP_DIR}" 2>/dev/null || true
 asterisk -rx "pjsip reload" 2>/dev/null || true
 asterisk -rx "dialplan reload" 2>/dev/null || true
 systemctl restart pocsag-api 2>/dev/null || true
+systemctl restart pocsag-cola 2>/dev/null || true
 
 echo "--------------------------------------------"
 log "Sistema POCSAG cliente v${VERSION} instalado."
@@ -106,3 +112,4 @@ echo "    4) La columna 'Registro' muestra Registered / No registrado en vivo"
 echo ""
 echo "  Verificar por consola:"
 echo "    sudo asterisk -rx 'pjsip show registrations'"
+echo "    sudo asterisk -rx 'dialplan show pocsag-incoming'"
