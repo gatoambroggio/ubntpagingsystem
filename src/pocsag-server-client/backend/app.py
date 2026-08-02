@@ -46,41 +46,101 @@ def ast_run(cmd): return run_cmd(["asterisk","-rx",cmd])
 # ===================== FUNCIONES MODO CLIENTE =====================
 def generar_pjsip_hospital_conf():
     """Genera /etc/asterisk/pjsip_hospital.conf con los registros de los internos
-    contra la central del hospital. Se llama desde /api/extensions/aplicar."""
+    contra la central del hospital. Arquitectura:
+    - Un unico endpoint [hospital-inbound] + identify para recibir TODAS las
+      llamadas entrantes del hospital (sin importar que interno se marco).
+    - Registros [reg-NNNN] + [auth-NNNN] por cada interno activo para que la
+      central sepa a donde enrutar la llamada.
+    Devuelve (ok: bool, msg: str)."""
     exts=listar_extensiones()
-    ip=all_config().get("hospital_pbx_ip","IP_HOSPITAL")
+    ip=(all_config().get("hospital_pbx_ip") or "").strip()
+    if not ip or ip=="IP_HOSPITAL":
+        return False,"Configure la IP del hospital en Parametros antes de aplicar"
+    activos=[e for e in exts if e["activo"]]
+    if not activos:
+        return False,"No hay extensiones activas. Habilite al menos una (3000-3003)"
+    for e in activos:
+        if not (e.get("password") or "").strip():
+            return False,f"La extension {e['numero']} no tiene clave configurada. Edite la extension y cargue la clave real"
     conf="/etc/asterisk/pjsip_hospital.conf"
-    lines=["; pjsip_hospital.conf - Generado por panel admin (modo cliente) - no editar a mano",""]
-    for e in exts:
-        if not e["activo"]: continue
-        num=e["numero"]; ctx=e["contexto"] or "pocsag-incoming"; pw=e["password"] or ""
-        lines+=[
-            f"[reg-{num}]","type=registration",f"outbound_auth=auth-{num}",
-            f"server_uri=sip:{ip}",f"client_uri=sip:{num}@{ip}","retry_interval=60","expiration=3600","",
-            f"[auth-{num}]","type=auth","auth_type=userpass",f"username={num}",f"password={pw}","",
-            f"[{num}]","type=endpoint",f"context={ctx}","disallow=all","allow=ulaw,alaw",
-            f"auth=auth-{num}",f"aors={num}","",
-            f"[{num}]","type=aor","max_contacts=1","",
-        ]
+    lines=[
+        "; pjsip_hospital.conf - Generado por panel admin (modo cliente) - NO editar a mano",
+        f"; IP central del hospital: {ip}",
+        f"; Internos activos: {', '.join(e['numero'] for e in activos)}",
+        "",
+        "; === Endpoint unico para llamadas entrantes del hospital ===",
+        "; Todas las llamadas que llegan desde la IP del hospital caen aqui",
+        "; y se enrutan por el dialplan (extensions_hospital.conf) segun el DID",
+        "[hospital-inbound]",
+        "type=endpoint",
+        "context=pocsag-incoming",
+        "disallow=all",
+        "allow=ulaw,alaw",
+        "trust_id_inbound=yes",
+        "direct_media=no",
+        "",
+        "[hospital-inbound]",
+        "type=aor",
+        "max_contacts=0",
+        "",
+        "; Identify: asocia la IP del hospital al endpoint inbound",
+        "[hospital-ident]",
+        "type=identify",
+        "endpoint=hospital-inbound",
+        f"match={ip}",
+        "",
+    ]
+    for e in activos:
+        num=e["numero"]; pw=e["password"].strip()
+        lines+=([
+            f"; === Registro del interno {num} contra {ip} ===",
+            f"[reg-{num}]",
+            "type=registration",
+            f"outbound_auth=auth-{num}",
+            f"server_uri=sip:{ip}",
+            f"client_uri=sip:{num}@{ip}",
+            "retry_interval=60",
+            "expiration=3600",
+            f"contact_user={num}",
+            "",
+            f"[auth-{num}]",
+            "type=auth",
+            "auth_type=userpass",
+            f"username={num}",
+            f"password={pw}",
+            "",
+        ])
     try:
         with open(conf,"w") as f: f.write("\n".join(lines)+"\n")
-        return True
+        return True,f"Generado: {len(activos)} registro(s) contra {ip} + endpoint inbound"
     except PermissionError:
-        return False
+        return False,"No se pudo escribir pjsip_hospital.conf (permisos del usuario asterisk)"
 
 def estado_registros_api():
-    """Devuelve {numero: 'Registered' | 'No registrado'} para cada extension activa.
-    Parsea 'pjsip show registrations' buscando 'reg-3000' o ':3000@' en cada linea."""
+    """Devuelve {numero: estado} para cada extension activa.
+    Estados: Registered, No registrado, Rechazado, Fallido, Enviando.
+    Parsea 'pjsip show registrations' en formato lista o tabla."""
     exts=listar_extensiones()
     activos=[e["numero"] for e in exts if e["activo"]]
     out={n:"No registrado" for n in activos}
     try:
-        r=subprocess.run(["asterisk","-rx","pjsip show registrations"],capture_output=True,text=True,timeout=10)
-        for line in (r.stdout or "").splitlines():
-            if "Registered" not in line: continue
+        r=subprocess.run(["asterisk","-rx","pjsip show registrations"],
+                         capture_output=True,text=True,timeout=10)
+        text=r.stdout or ""
+        if "No registrations" in text or not text.strip():
+            return out
+        lines=text.splitlines()
+        for i,line in enumerate(lines):
             for n in activos:
-                if ("reg-%s"%n) in line or (":%s@"%n) in line:
-                    out[n]="Registered"
+                tag="reg-%s"%n
+                if tag in line:
+                    ctx=" ".join(lines[i:i+6])
+                    if "Registered" in ctx: out[n]="Registered"
+                    elif "Rejected" in ctx: out[n]="Rechazado"
+                    elif "Failed" in ctx: out[n]="Fallido"
+                    elif "Request Sent" in ctx or "Unsent" in ctx: out[n]="Enviando"
+                    elif "Stopped" in ctx: out[n]="Detenido"
+                    break
     except Exception: pass
     return out
 
@@ -321,11 +381,12 @@ class H(BaseHTTPRequestHandler):
                 return jr(self,{"id":pid})
             if p=="/api/extensions/aplicar":
                 if not self._guard(): return
-                # MODO CLIENTE: generar pjsip_hospital.conf + extensions_hospital.conf
+                # MODO CLIENTE: generar pjsip_hospital.conf con identify + registros
                 if all_config().get("pocsag_mode")=="client":
-                    if not generar_pjsip_hospital_conf():
-                        return jr(self,{"error":"no se pudo escribir pjsip_hospital.conf (permisos)"},400)
-                    return jr(self,{"salida":"Configuracion cliente regenerada (pjsip_hospital.conf).\n"+ast_run("pjsip reload")+"\n"+ast_run("dialplan reload")})
+                    ok,msg=generar_pjsip_hospital_conf()
+                    if not ok:
+                        return jr(self,{"error":msg},400)
+                    return jr(self,{"salida":msg+"\n"+ast_run("pjsip reload")+"\n"+ast_run("dialplan reload")})
                 if not generar_pjsip_conf(): return jr(self,{"error":"no se pudo escribir /etc/asterisk/pjsip_pocsag.conf (permisos)"},400)
                 generar_dialplan_conf()
                 return jr(self,{"salida":"Configuracion PJSIP y dialplan regenerados.\n"+ast_run("pjsip reload")+"\n"+ast_run("dialplan reload")})
