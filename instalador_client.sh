@@ -60,13 +60,16 @@ echo "==> 3/6 Reemplazando admin.html con version cliente..."
 dl "${REPO}/src/pocsag-server-client/frontend/admin.html" "${APP_DIR}/frontend/admin.html"
 
 # ============================ 4. CONFIG ASTERISK ============================
-echo "==> 4/6 Descargando configuracion Asterisk cliente..."
+echo "==> 4/6 Configurando Asterisk cliente..."
 mkdir -p "$AST_ETC"
-# Dialplan autocontenido (IVR incluido, no depende de extensions_pocsag.conf)
+# Dialplan autocontenido (IVR incluido) - siempre se actualiza (es estatico)
 dl "${REPO}/src/pocsag-server-client/asterisk/extensions_hospital.conf" "${AST_ETC}/extensions_hospital.conf"
-# pjsip_hospital.conf se genera desde el panel admin (generar_pjsip_hospital_conf)
-# pero dejamos un template inicial con placeholders
-dl "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" "${AST_ETC}/pjsip_hospital.conf"
+# pjsip_hospital.conf: solo descargar template en instalacion nueva.
+# En --update NO pisar el archivo existente (tiene la IP y claves reales).
+# Se regenera desde la DB en el paso 5 con generar_pjsip_hospital_conf().
+if [[ $UPDATE -eq 0 ]] || [[ ! -f "${AST_ETC}/pjsip_hospital.conf" ]]; then
+  dl "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" "${AST_ETC}/pjsip_hospital.conf"
+fi
 
 # Incluir desde extensions.conf y pjsip.conf si no estan ya
 grep -q 'extensions_hospital.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_hospital.conf' >> "${AST_ETC}/extensions.conf"
@@ -84,15 +87,36 @@ for n in ('3000','3001','3002','3003'):
     c.execute("INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion,activo) VALUES (?,?,?,?,1)",
               (n, 'CAMBIAR_PASSWORD_' + n, 'pocsag-incoming', 'Interno hospital ' + n))
 # Marcar modo cliente y version
+# IMPORTANTE: hospital_pbx_ip usa INSERT OR IGNORE para NO sobreescribir
+# la IP real que el usuario ya configuro desde el panel admin.
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('pocsag_mode','client')")
-c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('hospital_pbx_ip','IP_HOSPITAL')")
+c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES('hospital_pbx_ip','IP_HOSPITAL')")
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
 c.commit(); c.close()
 PYEOF
 
+# Regenerar pjsip_hospital.conf desde la DB (usa la IP y claves reales)
+# Esto reconstruye el archivo con la config actual sin pisar los datos
+python3 - <<'PYEOF2'
+import sys, os
+sys.path.insert(0, "/opt/pocsag-server/backend")
+sys.path.insert(0, "/opt/pocsag-server")
+os.chdir("/opt/pocsag-server")
+try:
+    from app import generar_pjsip_hospital_conf
+    ok, msg = generar_pjsip_hospital_conf()
+    if ok:
+        print(f"[OK]   pjsip_hospital.conf regenerado: {msg}")
+    else:
+        print(f"[WARN] {msg}")
+        print("       Configure la IP y claves desde el panel admin -> Aplicar a Asterisk")
+except Exception as e:
+    print(f"[WARN] No se pudo regenerar pjsip_hospital.conf: {e}")
+PYEOF2
+
 # ============================ 6. RELOAD =====================================
 echo "==> 6/6 Recargando servicios..."
-chown -R asterisk:asterisk "${APP_DIR}" 2>/dev/null || true
+chown -R asterisk:asterisk "${APP_DIR}" "${AST_ETC}/pjsip_hospital.conf" "${AST_ETC}/extensions_hospital.conf" 2>/dev/null || true
 asterisk -rx "pjsip reload" 2>/dev/null || true
 asterisk -rx "dialplan reload" 2>/dev/null || true
 systemctl restart pocsag-api 2>/dev/null || true
