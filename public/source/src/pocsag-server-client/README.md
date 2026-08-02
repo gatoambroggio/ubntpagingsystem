@@ -17,31 +17,29 @@ A diferencia del servidor autónomo (`pocsag-server`), esta versión **no es una
 - **177**: número que el hospital enruta hacia cualquiera de los 4 internos libres.
 - **2184**: IVR de paginación interno (mismo flujo que el servidor autónomo).
 
-## Instalación
+## Instalación (una línea desde GitHub)
 
-1. Instalar el sistema base (igual que `pocsag-server`):
-   ```bash
-   sudo bash instalador.sh
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash
+```
 
-2. Copiar los archivos de configuración del cliente:
-   ```bash
-   sudo cp asterisk/pjsip_hospital.conf /etc/asterisk/
-   sudo cp asterisk/extensions_pocsag.conf /etc/asterisk/extensions_pocsag.conf
-   ```
+El instalador:
+1. Descarga y ejecuta el sistema base POCSAG (`instalador.sh`).
+2. Descarga `pjsip_hospital.conf` (4 registros 3000-3003) y `extensions_hospital.conf` (ruteo 177/3000-3003 → IVR 2184).
+3. Los incluye en `pjsip.conf` y `extensions.conf` sin pisar la config que el panel admin regenera.
+4. Marca la versión `1.0client` en la base y recarga Asterisk.
 
-3. Incluir el archivo hospital en `pjsip.conf` principal:
-   ```bash
-   echo "#include pjsip_hospital.conf" | sudo tee -a /etc/asterisk/pjsip.conf
-   ```
+Actualizar solo la config cliente (sin reinstalar la base):
+```bash
+curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash -s -- --update
+```
 
-4. Editar credenciales y IP del hospital (ver `asterisk/pjsip_hospital.conf`).
-
-5. Recargar:
-   ```bash
-   sudo asterisk -rx "pjsip reload"
-   sudo asterisk -rx "dialplan reload"
-   ```
+### Después de instalar
+Editar las credenciales reales del hospital:
+```bash
+sudo nano /etc/asterisk/pjsip_hospital.conf   # reemplazar IP_HOSPITAL y passwords
+sudo asterisk -rx "pjsip reload"
+```
 
 ## Verificación
 
