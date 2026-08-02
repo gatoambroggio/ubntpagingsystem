@@ -50,6 +50,8 @@ if ! curl -fsSL "${REPO}/src/pocsag-server-client/scripts/patch_client.py" -o "$
   err "No se pudo descargar patch_client.py"; exit 1
 fi
 python3 "$TMP/patch_client.py"
+# Hotfix: corregir parser de estado de registro SIP (bug que muestra todo en rojo)
+curl -fsSL "${REPO}/src/pocsag-server-client/scripts/fix_status.py" -o "$TMP/fix_status.py" 2>/dev/null && python3 "$TMP/fix_status.py" 2>/dev/null || true
 rm -rf "$TMP"
 
 # ============================ 3. CONFIG CLIENTE ==============================

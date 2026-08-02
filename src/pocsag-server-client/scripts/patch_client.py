@@ -49,9 +49,10 @@ def estado_registros_api():
     try:
         r=subprocess.run(["asterisk","-rx","pjsip show registrations"],capture_output=True,text=True,timeout=10)
         for line in (r.stdout or "").splitlines():
-            toks=set(line.split())
+            if "Registered" not in line: continue
             for n in activos:
-                if n in toks and "Registered" in line: out[n]="Registered"
+                if ("reg-%s"%n) in line or (":%s@"%n) in line:
+                    out[n]="Registered"
     except Exception: pass
     return out''',
     ),
