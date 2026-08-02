@@ -11,13 +11,14 @@
 # Actualizar solo la config cliente (sin reinstalar la base):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash -s -- --update
 #
-# DESPUES DE INSTALAR: editar /etc/asterisk/pjsip_hospital.conf y reemplazar
-# IP_HOSPITAL y las passwords por los datos reales que de el IT del hospital.
+# DESPUES DE INSTALAR: desde el panel admin -> Parametros -> cargar la IP real
+# del hospital y las claves de cada interno en Extensiones -> Aplicar a Asterisk.
 # ============================================================================
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main"
 AST_ETC="/etc/asterisk"
+DB="/opt/pocsag-server/database/pocsag.db"
 VERSION="1.0client"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
@@ -31,7 +32,7 @@ err(){ echo -e "${R}[ERR]${NC}  $*" >&2; }
 
 # ============================ 1. SISTEMA BASE ================================
 if [[ $UPDATE -eq 0 ]]; then
-  echo "==> 1/4 Instalando sistema base POCSAG (servidor autonomo)..."
+  echo "==> 1/5 Instalando sistema base POCSAG (servidor autonomo)..."
   TMP="$(mktemp -d)"
   if ! curl -fsSL "${REPO}/instalador.sh" -o "$TMP/instalador.sh"; then
     err "No se pudo descargar instalador.sh desde GitHub."; exit 1
@@ -39,11 +40,20 @@ if [[ $UPDATE -eq 0 ]]; then
   bash "$TMP/instalador.sh"
   rm -rf "$TMP"
 else
-  echo "==> 1/4 Modo --update: se saltea la instalacion base."
+  echo "==> 1/5 Modo --update: se saltea la instalacion base."
 fi
 
-# ============================ 2. CONFIG CLIENTE ==============================
-echo "==> 2/4 Descargando configuracion cliente (v${VERSION})..."
+# ============================ 2. PATCH APP + ADMIN ===========================
+echo "==> 2/5 Parcheando app.py y admin.html (modo cliente)..."
+TMP="$(mktemp -d)"
+if ! curl -fsSL "${REPO}/src/pocsag-server-client/scripts/patch_client.py" -o "$TMP/patch_client.py"; then
+  err "No se pudo descargar patch_client.py"; exit 1
+fi
+python3 "$TMP/patch_client.py"
+rm -rf "$TMP"
+
+# ============================ 3. CONFIG CLIENTE ==============================
+echo "==> 3/5 Descargando configuracion cliente (v${VERSION})..."
 mkdir -p "$AST_ETC"
 if ! curl -fsSL "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" -o "${AST_ETC}/pjsip_hospital.conf"; then
   err "No se pudo descargar pjsip_hospital.conf"; exit 1
@@ -52,23 +62,33 @@ if ! curl -fsSL "${REPO}/src/pocsag-server-client/asterisk/extensions_hospital.c
   err "No se pudo descargar extensions_hospital.conf"; exit 1
 fi
 
-# ============================ 3. INCLUDES ===================================
-echo "==> 3/4 Integrando includes en pjsip.conf y extensions.conf..."
+# ============================ 4. MIGRACION BD ================================
+echo "==> 4/5 Migrando base a modo cliente (internos 3000-3003)..."
+python3 - <<PYEOF
+import sqlite3
+c = sqlite3.connect('${DB}')
+# Quitar extensiones del servidor autonomo (101, 2184-2187)
+c.execute("DELETE FROM extensiones WHERE numero IN ('101','2184','2185','2186','2187')")
+# Insertar los 4 internos del hospital (si no existen)
+for n in ('3000','3001','3002','3003'):
+    c.execute("INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion,activo) VALUES (?,?,?,?,1)",
+              (n, 'CAMBIAR_PASSWORD_' + n, 'pocsag-incoming', 'Interno hospital ' + n))
+# Marcar modo cliente y version
+c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('pocsag_mode','client')")
+c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('hospital_pbx_ip','IP_HOSPITAL')")
+c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
+c.commit(); c.close()
+PYEOF
+
+# Incluir pjsip_hospital.conf y extensions_hospital.conf
 grep -q 'pjsip_hospital.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_hospital.conf' >> "${AST_ETC}/pjsip.conf"
 grep -q 'extensions_hospital.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_hospital.conf' >> "${AST_ETC}/extensions.conf"
 
-# Marcar version cliente en la base de datos
-python3 -c "
-import sqlite3
-c = sqlite3.connect('/opt/pocsag-server/database/pocsag.db')
-c.execute('INSERT OR REPLACE INTO config(clave,valor) VALUES(?,?)', ('version','${VERSION}'))
-c.commit(); c.close()
-" 2>/dev/null || warn "No se pudo actualizar version en la base."
-
-# ============================ 4. RELOAD =====================================
-echo "==> 4/4 Recargando Asterisk..."
+# ============================ 5. RELOAD =====================================
+echo "==> 5/5 Recargando Asterisk..."
 asterisk -rx "pjsip reload" 2>/dev/null || true
 asterisk -rx "dialplan reload" 2>/dev/null || true
+systemctl restart pocsag-api 2>/dev/null || true
 
 echo "--------------------------------------------"
 log "Sistema POCSAG cliente v${VERSION} instalado."
@@ -76,14 +96,11 @@ echo ""
 echo "  Panel publico: http://localhost:8080/"
 echo "  Panel admin  : http://localhost:8080/admin  (admin / admin123)"
 echo ""
-echo "  PROXIMO PASO - Editar credenciales del hospital:"
-echo "    sudo nano ${AST_ETC}/pjsip_hospital.conf"
-echo "    (reemplazar IP_HOSPITAL y CAMBIAR_PASSWORD_3000..3003)"
-echo "    sudo asterisk -rx 'pjsip reload'"
+echo "  PROXIMO PASO (todo desde el panel admin):"
+echo "    1) Parametros -> IP central del hospital -> cargar la IP real -> Guardar"
+echo "    2) Extensiones -> editar cada interno (3000-3003) con su clave real"
+echo "    3) Extensiones -> Aplicar a Asterisk  (regenera pjsip_hospital.conf)"
+echo "    4) La columna 'Registro' muestra Registered / No registrado en vivo"
 echo ""
-echo "  Verificar registros:"
+echo "  Verificar por consola:"
 echo "    sudo asterisk -rx 'pjsip show registrations'"
-echo "    (los 4 internos deben decir 'Registered')"
-echo ""
-echo "  Probar: llamar desde un interno del hospital al 177."
-echo "    Debe escuchar el IVR: 'Despues del tono marque el codigo'"
