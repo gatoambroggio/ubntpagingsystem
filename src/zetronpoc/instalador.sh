@@ -36,6 +36,39 @@ dl(){ # dl <url> <dest>
 export TZ="America/Argentina/Cordoba"
 timedatectl set-timezone "America/Argentina/Cordoba" 2>/dev/null || true
 
+# ============================ 0. LIMPIAR SISTEMA ANTERIOR ====================
+echo "==> 0/10 Limpiando instalacion anterior (pogsac-server / pogsag-server)..."
+# Detener y deshabilitar TODOS los servicios viejos (y los propios por si es reintento)
+for svc in pogsag-api pogsag-cola pogsag-monitor zetronpoc-api zetronpoc-cola; do
+  systemctl stop "$svc" 2>/dev/null || true
+  systemctl disable "$svc" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${svc}.service" 2>/dev/null || true
+done
+systemctl daemon-reload 2>/dev/null || true
+# Matar procesos viejos que pudieran tener el puerto 8080 o colas activas
+pkill -f "/opt/pogsag-server" 2>/dev/null || true
+pkill -f "pogsag_handler" 2>/dev/null || true
+pkill -f "cola_worker" 2>/dev/null || true
+fuser -k 8080/tcp 2>/dev/null || true
+# Borrar directorios de apps viejas
+rm -rf /opt/pogsag-server 2>/dev/null || true
+# Limpiar configs de Asterisk dejadas por sistemas viejos
+for f in pjsip_hospital.conf pjsip_pocsag.conf pjsip_pogsag.conf \
+         pjsip_hospital.conf.bak pjsip_pocsag.conf.bak pjsip_pogsag.conf.bak \
+         extensions_hospital.conf extensions_pocsag.conf; do
+  rm -f "${AST_ETC}/${f}" 2>/dev/null || true
+done
+# Limpiar AGI scripts viejos copiados a Asterisk
+for f in pogsag_handler.py pogsag_check.py cola_worker.py; do
+  rm -f "/var/lib/asterisk/agi-bin/${f}" 2>/dev/null || true
+done
+# Quitar cron y logrotate viejos
+rm -f /etc/cron.d/pogsag-cleanup /etc/logrotate.d/pogsag 2>/dev/null || true
+# Recargar Asterisk para que solte endpoints/registros viejos
+asterisk -rx "pjsip reload" 2>/dev/null || true
+asterisk -rx "dialplan reload" 2>/dev/null || true
+log "Sistema anterior limpio."
+
 # ============================ 1. DEPENDENCIAS ================================
 if [[ $UPDATE -eq 0 ]]; then
   echo "==> 1/10 Dependencias base..."
