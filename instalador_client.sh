@@ -19,7 +19,7 @@ SRC="${REPO}/src/pocsag-server-client"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/pocsag-server"
 DB="${APP_DIR}/database/pocsag.db"
-VERSION="1.0client"
+VERSION="1.01client"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 

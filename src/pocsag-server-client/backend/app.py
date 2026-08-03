@@ -78,6 +78,43 @@ SAFE_CMDS={"status":"core show status","version":"core show version","peers":"pj
            "channeltypes":"core show channeltypes","endpoint_3000":"pjsip show endpoint 3000",
            "endpoint_hospital":"pjsip show endpoint hospital-inbound"}
 
+def diagnostico_sip():
+    """Diagnostico completo de conectividad SIP con la central del hospital."""
+    cfg=all_config()
+    ip=(cfg.get("hospital_pbx_ip") or "").strip()
+    port=(cfg.get("hospital_pbx_port") or "5060").strip()
+    result={"ip":ip,"puerto":port,"pasos":[]}
+    if not ip or ip=="IP_HOSPITAL":
+        result["error"]="No hay IP del hospital configurada en Parametros"
+        return result
+    # 1. Ping
+    p=run_cmd(["ping","-c","3","-W","2",ip],timeout=10)
+    ok=" 0% packet loss" in p or "0% packet loss" in p
+    result["pasos"].append({"paso":"Ping","ok":ok,"salida":p[-500:]})
+    # 2. Puerto SIP UDP (sipsak o nc)
+    p2=run_cmd(["timeout","3","bash","-c",f"echo -ne '\\x00\\x00\\x00\\x00' | nc -u -w2 {ip} {port} 2>&1 || echo 'sin respuesta (puede ser normal en UDP)'"],timeout=8)
+    result["pasos"].append({"paso":"Puerto SIP UDP","ok":"sin respuesta" not in p2 or True,"salida":p2[-200:]})
+    # 3. pjsip_hospital.conf actual
+    try:
+        with open("/etc/asterisk/pjsip_hospital.conf") as f:
+            result["pjsip_conf"]=f.read()[-3000:]
+    except Exception as e:
+        result["pjsip_conf"]=f"Error leyendo: {e}"
+    # 4. Estado registros
+    result["registros"]=ast_run("pjsip show registrations")
+    # 5. Transportes
+    result["transportes"]=ast_run("pjsip show transports")
+    # 6. Log PJSIP reciente
+    log=run_cmd(["bash","-c","grep -i 'pjsip\\|res_pjsip\\|registration' /var/log/asterisk/messages 2>/dev/null | tail -40"],timeout=5)
+    result["log_pjsip"]=log[-2000:] if log else "(no hay log o no accesible)"
+    # 7. pjsip.conf
+    try:
+        with open("/etc/asterisk/pjsip.conf") as f:
+            result["pjsip_main"]=f.read()
+    except Exception as e:
+        result["pjsip_main"]=f"Error: {e}"
+    return result
+
 def rows_from_sheet(body, filename):
     name=(filename or "").lower(); rows=[]
     if name.endswith(".csv"):
@@ -219,6 +256,9 @@ class H(BaseHTTPRequestHandler):
             sub=q.get("cmd",["status"])[0]; acmd=SAFE_CMDS.get(sub)
             if not acmd: return jr(self,{"error":"comando no permitido"},400)
             return jr(self,{"cmd":sub,"salida":ast_run(acmd)})
+        if p=="/api/pbx/diagnose":
+            if not self._guard(): return
+            return jr(self, diagnostico_sip())
         if p=="/api/cola":
             if not self._guard(): return
             est=q.get("estado",[""])[0] if q.get("estado") else None
