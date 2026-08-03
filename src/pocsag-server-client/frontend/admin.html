@@ -1,5 +1,5 @@
 <!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>POCSAG Cliente - Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Pogsac - Admin</title>
 <style>
 :root{--bg:#0a0f1e;--panel:#101a2e;--panel2:#17243f;--line:#26334f;--txt:#eaf1fb;--mut:#94a6c6;--acc:#22d3ee;--acc2:#6366f1;--ok:#22c55e;--err:#ef4444;--warn:#f59e0b;--r:16px}
 *{box-sizing:border-box}
@@ -63,7 +63,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 <div class="login" id="login">
   <div class="box">
     <div class="logo">🧭</div>
-    <h1>Panel de administracion</h1><p>POCSAG Cliente · paginacion hospitalaria</p>
+    <h1>Panel de administracion</h1><p>Pogsac · paginacion hospitalaria</p>
     <div style="margin-bottom:.8rem"><label>Usuario</label><input id="lu" autocomplete="off"></div>
     <div style="margin-bottom:1.2rem"><label>Clave</label><input id="lp" type="password" autocomplete="off"></div>
     <button class="btn btn-pri" style="width:100%;justify-content:center" onclick="doLogin()">Ingresar</button>
@@ -72,7 +72,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 </div>
 <div class="app" id="app" style="display:none">
   <div class="side">
-    <div class="brand"><div class="logo">🧭</div><div>POCSAG <small style="display:block;color:var(--mut);font-weight:500;font-size:.7rem">cliente</small></div></div>
+    <div class="brand"><div class="logo">🧭</div><div>Pogsac <small style="display:block;color:var(--mut);font-weight:500;font-size:.7rem">v1.0</small></div></div>
     <button class="burger" onclick="toggleMenu()" aria-label="menu">☰</button>
     <nav>
       <button class="active" onclick="tab('ext',this)">☎ Extensiones</button>
@@ -95,7 +95,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
     <div class="bot"><span id="h" class="pill">…</span><br><button class="btn btn-sec btn-sm" style="margin-top:.6rem;width:100%;justify-content:center" onclick="logout()">Salir</button></div>
   </div>
   <div class="content">
-    <div class="topbar"><h1 id="tit">Extensiones</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.02</span></div>
+    <div class="topbar"><h1 id="tit">Extensiones</h1><span id="ver" class="badge mut" style="margin-left:auto">v1.0</span></div>
 
     <div class="tab active" id="t-ext"><div class="card">
       <h2><span>☎ Extensiones registradas en la central del hospital</span><button class="btn btn-pri btn-sm" onclick="openExt()">+ Nueva extension</button></h2>
@@ -143,13 +143,14 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
       <div class="row"><div><label>Modo sistema</label><input id="c_pocsag_mode" readonly style="opacity:.7"></div><div></div></div>
       <div class="row"><div><label>Codecs permitidos</label><input id="c_codecs" placeholder="ulaw,alaw"></div><div><label>Reintento registro (seg)</label><input id="c_retry_interval" type="number" value="60"></div></div>
       <div class="row"><div><label>Expiracion registro (seg)</label><input id="c_expiration" type="number" value="3600"></div></div>
-      <div style="border-top:1px solid var(--line);margin-top:1rem;padding-top:1rem"><h3 style="font-size:.9rem;margin:0 0 .8rem">📡 Encoder POCSAG - Dual Rate (Zetron 640)</h3>
-      <div class="hint" style="margin-bottom:.8rem">El encoder genera silencio (WarmUp) antes del preambulo. Estos valores se guardan en la BD y se aplican a cada WAV generado. Defaults Zetron 640: 512b=750ms, 1200b=1500ms, preambulo=300 bits.</div>
+      <div style="border-top:1px solid var(--line);margin-top:1rem;padding-top:1rem"><h3 style="font-size:.9rem;margin:0 0 .8rem">📡 Encoder POCSAG - parametros configurables</h3>
+      <div class="hint" style="margin-bottom:.8rem">Todos los parametros del encoder se guardan en la BD y se aplican a cada WAV generado. Defaults POCSAG estandar: 1200 baud, preambulo 576 bits, desviacion 4.5 kHz (450 Hz baseband), 2 niveles FSK, modo alfanumerico.</div>
+      <div class="row"><div><label>Baudios (default)</label><select id="c_baudios_default"><option value="512">512</option><option value="1200">1200</option><option value="2400">2400</option></select></div><div><label>Preambulo (bits)</label><input id="c_preamble_bits" type="number" value="576"></div></div>
       <div class="row"><div><label>WarmUp 512 baud (ms)</label><input id="c_warmup_512_ms" type="number" value="750"></div><div><label>WarmUp 1200 baud (ms)</label><input id="c_warmup_1200_ms" type="number" value="1500"></div></div>
-      <div class="row"><div><label>WarmUp 2400 baud (ms)</label><input id="c_warmup_2400_ms" type="number" value="1500"></div><div><label>Preambulo (bits)</label><input id="c_preamble_bits" type="number" value="576"></div></div>
-      <div class="row"><div><label>Desviacion FSK (kHz)</label><input id="c_fsk_deviation_khz" type="number" step="0.1" value="4.5"></div><div><label>Desviacion FSK baseband (Hz)</label><input id="c_fsk_deviation_baseband_hz" type="number" value="450"></div></div>
-      <div class="row"><div><label>Niveles FSK</label><input id="c_fsk_levels" type="number" value="2" readonly style="opacity:.7"></div><div><label>Modo funcion</label><input id="c_function_mode" value="alphanumeric" readonly style="opacity:.7"></div></div>
-      <div class="hint" style="margin-top:.6rem">POCSAG estandar: 2-FSK, desviacion 4.5 kHz (450 Hz baseband), preambulo 576 bits, funcion alfanumerica (0x3). El modo y los niveles son fijos segun norma POCSAG.</div>
+      <div class="row"><div><label>WarmUp 2400 baud (ms)</label><input id="c_warmup_2400_ms" type="number" value="1500"></div><div><label>Desviacion FSK (kHz)</label><input id="c_fsk_deviation_khz" type="number" step="0.1" value="4.5"></div></div>
+      <div class="row"><div><label>Desviacion FSK baseband (Hz)</label><input id="c_fsk_deviation_baseband_hz" type="number" value="450"></div><div><label>Niveles FSK</label><select id="c_fsk_levels"><option value="2">2 niveles (POCSAG estandar)</option><option value="4">4 niveles</option></select></div></div>
+      <div class="row"><div><label>Modo funcion</label><select id="c_function_mode"><option value="alphanumeric">Alfanumerico</option><option value="numeric">Numerico</option><option value="tone">Tono</option></select></div><div></div></div>
+      <div class="hint" style="margin-top:.6rem">Modo alfanumerico (funcion 0x3): el pager muestra texto. Numerico (0x0): solo digitos. Tono (0x1): alerta sin mensaje. Niveles FSK 2 = POCSAG estandar.</div>
       </div>
       <div class="row" style="margin-top:1rem"><div><label>Usuario admin</label><input id="c_admin_user"></div><div><label>Clave admin</label><input id="c_admin_pass" type="text"></div></div>
       <div class="row"><div><label>Timeout mensaje (seg)</label><input id="c_mensaje_timeout" type="number" step="1"></div><div><label>PTT pre-activo (seg)</label><input id="c_ptt_preactivo" type="number" step="0.1"></div>
@@ -320,8 +321,8 @@ async function loadHist(off){hoff=off||0;document.getElementById('tb_hist').inne
 function hgGo(d){loadHist(Math.max(0,hoff+d*HPG));}
 function exportHist(){const p=new URLSearchParams();const d=document.getElementById('h_desde').value,h=document.getElementById('h_hasta').value,c=document.getElementById('h_codigo').value,i=document.getElementById('h_interno').value,e=document.getElementById('h_estado').value;if(d)p.set('fecha_desde',d);if(h)p.set('fecha_hasta',h+'T23:59:59');if(c)p.set('codigo',c);if(i)p.set('interno',i);if(e)p.set('estado',e);window.open('/api/historial/export?'+p,'_blank');}
 // Config
-async function loadConfig(){const c=await api('GET','/api/config');['admin_user','admin_pass','mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode','smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_secure','backup_email','hospital_pbx_ip','hospital_pbx_port','pocsag_mode','transport_bind','transport_protocol','codecs','retry_interval','expiration','warmup_512_ms','warmup_1200_ms','warmup_2400_ms','preamble_bits','fsk_deviation_khz','fsk_deviation_baseband_hz','fsk_levels','function_mode'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});}
-async function saveConfig(){const d={admin_user:document.getElementById('c_admin_user').value,admin_pass:document.getElementById('c_admin_pass').value,mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value,smtp_host:document.getElementById('c_smtp_host').value,smtp_port:document.getElementById('c_smtp_port').value,smtp_user:document.getElementById('c_smtp_user').value,smtp_pass:document.getElementById('c_smtp_pass').value,smtp_from:document.getElementById('c_smtp_from').value,smtp_secure:document.getElementById('c_smtp_secure').value,backup_email:document.getElementById('c_backup_email').value,hospital_pbx_ip:document.getElementById('c_hospital_pbx_ip').value,hospital_pbx_port:document.getElementById('c_hospital_pbx_port').value,transport_bind:document.getElementById('c_transport_bind').value,transport_protocol:document.getElementById('c_transport_protocol').value,codecs:document.getElementById('c_codecs').value,retry_interval:document.getElementById('c_retry_interval').value,expiration:document.getElementById('c_expiration').value,warmup_512_ms:document.getElementById('c_warmup_512_ms').value,warmup_1200_ms:document.getElementById('c_warmup_1200_ms').value,warmup_2400_ms:document.getElementById('c_warmup_2400_ms').value,preamble_bits:document.getElementById('c_preamble_bits').value,
+async function loadConfig(){const c=await api('GET','/api/config');['admin_user','admin_pass','mensaje_timeout','ptt_preactivo','digit_timeout','response_timeout','test_mode','smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_secure','backup_email','hospital_pbx_ip','hospital_pbx_port','pocsag_mode','transport_bind','transport_protocol','codecs','retry_interval','expiration','baudios_default','warmup_512_ms','warmup_1200_ms','warmup_2400_ms','preamble_bits','fsk_deviation_khz','fsk_deviation_baseband_hz','fsk_levels','function_mode'].forEach(k=>{const el=document.getElementById('c_'+k);if(el&&c[k]!=null)el.value=c[k];});}
+async function saveConfig(){const d={admin_user:document.getElementById('c_admin_user').value,admin_pass:document.getElementById('c_admin_pass').value,mensaje_timeout:document.getElementById('c_mensaje_timeout').value,ptt_preactivo:document.getElementById('c_ptt_preactivo').value,digit_timeout:document.getElementById('c_digit_timeout').value,response_timeout:document.getElementById('c_response_timeout').value,test_mode:document.getElementById('c_test_mode').value,smtp_host:document.getElementById('c_smtp_host').value,smtp_port:document.getElementById('c_smtp_port').value,smtp_user:document.getElementById('c_smtp_user').value,smtp_pass:document.getElementById('c_smtp_pass').value,smtp_from:document.getElementById('c_smtp_from').value,smtp_secure:document.getElementById('c_smtp_secure').value,backup_email:document.getElementById('c_backup_email').value,hospital_pbx_ip:document.getElementById('c_hospital_pbx_ip').value,hospital_pbx_port:document.getElementById('c_hospital_pbx_port').value,transport_bind:document.getElementById('c_transport_bind').value,transport_protocol:document.getElementById('c_transport_protocol').value,codecs:document.getElementById('c_codecs').value,retry_interval:document.getElementById('c_retry_interval').value,expiration:document.getElementById('c_expiration').value,warmup_512_ms:document.getElementById('c_warmup_512_ms').value,warmup_1200_ms:document.getElementById('c_warmup_1200_ms').value,warmup_2400_ms:document.getElementById('c_warmup_2400_ms').value,preamble_bits:document.getElementById('c_preamble_bits').value,baudios_default:document.getElementById('c_baudios_default').value,
 fsk_deviation_khz:document.getElementById('c_fsk_deviation_khz').value,fsk_deviation_baseband_hz:document.getElementById('c_fsk_deviation_baseband_hz').value,fsk_levels:document.getElementById('c_fsk_levels').value,function_mode:document.getElementById('c_function_mode').value};await api('PUT','/api/config',d);const t=document.getElementById('cfg_res');t.className='toast show ok';t.textContent='Parametros guardados. Pulsa "Aplicar a Asterisk" en Extensiones para regenerar la config SIP.';setTimeout(()=>t.className='toast',4000);}
 // Apariencia
 async function loadTheme(){const c=await api('GET','/api/config');['acc','acc2','bg','panel'].forEach(k=>{const el=document.getElementById('th_'+k);if(el&&c['theme_'+k])el.value=c['theme_'+k];});}

@@ -1,8 +1,8 @@
-# pocsag-server-client
+# Pogsac
 
-Sistema de paginación hospitalaria POCSAG (variante CLIENTE) - STANDALONE.
+Sistema de paginacion hospitalaria POCSAG (modo cliente) - STANDALONE.
 
-## Arquitectura (v1.01)
+## Arquitectura (v1.0)
 
 - **Totalmente self-contained**: no depende de `instalador.sh` ni de `pjsip_pocsag.conf`.
 - **Todo en la base de datos**: IP del hospital, transporte, codecs, claves, etc.
@@ -77,4 +77,4 @@ cat /etc/asterisk/pjsip_hospital.conf
 
 ## Version
 
-1.01 (standalone, FreePBX 192.168.2.97, internos 2000-2010)
+1.0 (Pogsac - FreePBX 192.168.2.97, internos 2000-2010)

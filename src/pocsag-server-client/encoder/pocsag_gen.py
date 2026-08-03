@@ -12,6 +12,9 @@ FRAME_SIZE = 2
 BATCH_SIZE = 16
 FLAG_MESSAGE = 0x100000
 FUNCTION_ALPHANUMERIC = 0x3
+FUNCTION_NUMERIC = 0x0
+FUNCTION_TONE = 0x1
+FUNCTION_BITS = {'alphanumeric': 0x3, 'numeric': 0x0, 'tone': 0x1}
 CRC_BITS = 10
 CRC_GENERATOR = 0b11101101001
 TEXT_BITS_PER_WORD = 20
@@ -71,6 +74,13 @@ def get_preamble_bits():
     if ENC_CFG is None: ENC_CFG = get_encoder_config()
     return ENC_CFG.get('preamble_bits', DEFAULT_PREAMBLE_BITS)
 
+def get_function_bits():
+    """Devuelve los bits de funcion POCSAG segun el modo configurado en la BD."""
+    global ENC_CFG
+    if ENC_CFG is None: ENC_CFG = get_encoder_config()
+    mode = (ENC_CFG.get('function_mode', DEFAULT_FUNCTION_MODE) or 'alphanumeric').lower()
+    return FUNCTION_BITS.get(mode, FUNCTION_ALPHANUMERIC)
+
 def crc(input_msg):
     denominator = CRC_GENERATOR << 20
     msg = input_msg << CRC_BITS
@@ -106,7 +116,7 @@ def encode_transmission(address, message):
     offset = address_offset(address)
     for _ in range(offset):
         out.append(IDLE)
-    addr_data = ((address >> 3) << 2) | FUNCTION_ALPHANUMERIC
+    addr_data = ((address >> 3) << 2) | get_function_bits()
     out.append(encode_codeword(addr_data, is_message=False))
     cur = 0; nbits = 0; pos = offset + 1
     for c in message:

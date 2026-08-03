@@ -31,7 +31,8 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('fsk_deviation_baseband_hz','450'),
  ('fsk_levels','2'),
  ('function_mode','alphanumeric'),
- ('version','1.02');
+ ('baudios_default','1200'),
+ ('version','1.0');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES
  ('10','00002020','Juan','Perez','Guardia Medica',1200,'Medico de guardia'),
