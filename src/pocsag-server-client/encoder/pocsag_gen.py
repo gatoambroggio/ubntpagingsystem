@@ -18,28 +18,48 @@ TEXT_BITS_PER_WORD = 20
 TEXT_BITS_PER_CHAR = 7
 
 # Defaults del Zetron Model 640 (se usan si la BD no responde)
+# POCSAG estandar: preambulo >= 576 bits, 2-FSK, desviacion 4.5 kHz (450 Hz baseband)
 DEFAULT_WARMUP_MS = {512: 750, 1200: 1500, 2400: 1500}
-DEFAULT_PREAMBLE_BITS = 300
+DEFAULT_PREAMBLE_BITS = 576
+DEFAULT_FSK_DEVIATION_KHZ = 4.5
+DEFAULT_FSK_DEVIATION_BASEBAND_HZ = 450
+DEFAULT_FSK_LEVELS = 2
+DEFAULT_FUNCTION_MODE = "alphanumeric"
 
 def get_encoder_config():
     """Lee la configuracion Dual Rate desde la base de datos.
-    Devuelve dict con warmup_ms (por baud) y preamble_bits."""
+    Devuelve dict con warmup_ms (por baud), preamble_bits y parametros FSK."""
     cfg = {
         'warmup_512': DEFAULT_WARMUP_MS[512],
         'warmup_1200': DEFAULT_WARMUP_MS[1200],
         'warmup_2400': DEFAULT_WARMUP_MS[2400],
         'preamble_bits': DEFAULT_PREAMBLE_BITS,
+        'fsk_deviation_khz': DEFAULT_FSK_DEVIATION_KHZ,
+        'fsk_deviation_baseband_hz': DEFAULT_FSK_DEVIATION_BASEBAND_HZ,
+        'fsk_levels': DEFAULT_FSK_LEVELS,
+        'function_mode': DEFAULT_FUNCTION_MODE,
     }
     try:
         sys.path.insert(0, "/opt/pocsag-server")
         sys.path.insert(0, "/opt/pocsag-server/database")
         from db_manager import get_config
         for k, dkey in [('warmup_512_ms', 'warmup_512'), ('warmup_1200_ms', 'warmup_1200'),
-                        ('warmup_2400_ms', 'warmup_2400'), ('preamble_bits', 'preamble_bits')]:
+                        ('warmup_2400_ms', 'warmup_2400'), ('preamble_bits', 'preamble_bits'),
+                        ('fsk_levels', 'fsk_levels')]:
             val = get_config(k, "")
             if val:
                 try: cfg[dkey] = int(val)
                 except (ValueError, TypeError): pass
+        for k, dkey in [('fsk_deviation_khz', 'fsk_deviation_khz'),
+                        ('fsk_deviation_baseband_hz', 'fsk_deviation_baseband_hz'),
+                        ('function_mode', 'function_mode')]:
+            val = get_config(k, "")
+            if val:
+                if dkey in ('fsk_deviation_khz', 'fsk_deviation_baseband_hz'):
+                    try: cfg[dkey] = float(val)
+                    except (ValueError, TypeError): pass
+                else:
+                    cfg[dkey] = val
     except Exception:
         pass
     return cfg
@@ -174,7 +194,12 @@ def main():
     with wave.open(out_path, 'wb') as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sample_rate)
         w.writeframes(warmup + data)
-    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, warmup={warmup_ms}ms, preamble={preamble_bits}bits, {len(codewords)} cw)")
+    fsk_khz = ENC_CFG.get('fsk_deviation_khz', DEFAULT_FSK_DEVIATION_KHZ)
+    fsk_bb = ENC_CFG.get('fsk_deviation_baseband_hz', DEFAULT_FSK_DEVIATION_BASEBAND_HZ)
+    fsk_lvl = ENC_CFG.get('fsk_levels', DEFAULT_FSK_LEVELS)
+    fmode = ENC_CFG.get('function_mode', DEFAULT_FUNCTION_MODE)
+    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, warmup={warmup_ms}ms, preamble={preamble_bits}bits, "
+          f"FSK {fsk_lvl}-nivel desv={fsk_khz}kHz/{fsk_bb}Hzbb, modo={fmode}, {len(codewords)} cw)")
     return 0
 
 if __name__ == "__main__":

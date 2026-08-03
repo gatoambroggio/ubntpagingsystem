@@ -19,7 +19,7 @@ SRC="${REPO}/src/pocsag-server-client"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/pocsag-server"
 DB="${APP_DIR}/database/pocsag.db"
-VERSION="1.01"
+VERSION="1.02"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
@@ -153,7 +153,8 @@ if row and row[0] == 'IP_HOSPITAL':
 # Asegurar config por defecto (INSERT OR IGNORE no pisa valores existentes)
 for k,v in [('hospital_pbx_ip','192.168.2.97'),('hospital_pbx_port','5060'),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
             ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600'),
-            ('warmup_512_ms','750'),('warmup_1200_ms','1500'),('warmup_2400_ms','1500'),('preamble_bits','300')]:
+            ('warmup_512_ms','750'),('warmup_1200_ms','1500'),('warmup_2400_ms','1500'),('preamble_bits','576'),
+            ('fsk_deviation_khz','4.5'),('fsk_deviation_baseband_hz','450'),('fsk_levels','2'),('function_mode','alphanumeric')]:
     c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)", (k,v))
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
 # Asegurar que existen los internos 2000-2010 (no pisar claves existentes)

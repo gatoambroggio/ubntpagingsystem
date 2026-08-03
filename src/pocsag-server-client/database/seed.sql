@@ -26,8 +26,12 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('warmup_512_ms','750'),
  ('warmup_1200_ms','1500'),
  ('warmup_2400_ms','1500'),
- ('preamble_bits','300'),
- ('version','1.01');
+ ('preamble_bits','576'),
+ ('fsk_deviation_khz','4.5'),
+ ('fsk_deviation_baseband_hz','450'),
+ ('fsk_levels','2'),
+ ('function_mode','alphanumeric'),
+ ('version','1.02');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES
  ('10','00002020','Juan','Perez','Guardia Medica',1200,'Medico de guardia'),
