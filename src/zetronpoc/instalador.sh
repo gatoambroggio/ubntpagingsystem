@@ -70,15 +70,17 @@ asterisk -rx "dialplan reload" 2>/dev/null || true
 log "Sistema anterior limpio."
 
 # ============================ 1. DEPENDENCIAS ================================
+echo "==> 1/10 Dependencias base..."
 if [[ $UPDATE -eq 0 ]]; then
-  echo "==> 1/10 Dependencias base..."
   apt-get update -y
   apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git curl ca-certificates \
     logrotate espeak gpiod libgpiod2 asterisk 2>&1 || { err "Fallo instalacion de paquetes."; exit 1; }
-  pip3 install --break-system-packages openpyxl xlrd 2>&1 || warn "openpyxl/xlrd no instalados (import Excel limitado a CSV)"
 else
-  echo "==> 1/10 Dependencias (omitidas en --update)"
+  # En --update solo asegurar lo critico que pudo ser purgado (ej: asterisk)
+  command -v asterisk >/dev/null 2>&1 || apt-get install -y asterisk 2>&1 || warn "No se pudo reinstalar asterisk"
 fi
+command -v espeak >/dev/null 2>&1 || apt-get install -y espeak sox 2>&1 || true
+pip3 install --break-system-packages openpyxl xlrd 2>&1 || warn "openpyxl/xlrd no instalados (import Excel limitado a CSV)"
 
 AST_USER="asterisk"
 mkdir -p /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds
@@ -121,6 +123,7 @@ dl "${SRC}/services/zetronpoc-cola.service" "/etc/systemd/system/zetronpoc-cola.
 
 # ============================ 4. ASTERISK CONFIG ===========================
 echo "==> 4/10 Configurando Asterisk..."
+mkdir -p "${AST_ETC}"
 # pjsip.conf: SOLO incluye el generado por el panel
 cat > "${AST_ETC}/pjsip.conf" <<'EOF'
 ; ZetronPOC: pjsip_zetronpoc.conf es self-contained (transport + endpoints + registros)

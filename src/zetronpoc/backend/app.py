@@ -277,6 +277,11 @@ class Server(ThreadingMixIn, ThreadingHTTPServer):
     daemon_threads = True
 
 if __name__ == "__main__":
-    os.makedirs(os.path.join(APP_DIR, "logs"), exist_ok=True)
-    print("ZetronPOC v2.0 API en http://%s:%d" % (HOST, PORT))
-    Server((HOST, PORT), Handler).serve_forever()
+    try:
+        os.makedirs(os.path.join(APP_DIR, "logs"), exist_ok=True)
+        print("ZetronPOC v2.0 API en http://%s:%d" % (HOST, PORT), flush=True)
+        Server((HOST, PORT), Handler).serve_forever()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
