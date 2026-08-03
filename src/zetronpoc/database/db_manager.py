@@ -3,13 +3,13 @@
 db_manager.py - ZetronPOC v2.0 - Gestor de base de datos y configuracion.
 Toda la configuracion (PBX, encoder Zetron 640, transmisor DaptX-Xtra, IVR,
 GPIO, SMTP, tema) vive en la tabla config (clave/valor).
-generar_pjsip_conf() produce un pjsip_zetronpoc.conf SELF-CONTAINED.
+generar_pjsip_conf() produce un pjsip.conf SELF-CONTAINED (sin includes).
 """
 import sqlite3, os, secrets, time, datetime, subprocess, sys
 from contextlib import contextmanager
 
 DEFAULT_DB = "/opt/zetronpoc/database/zetronpoc.db"
-PJSIP_CONF = "/etc/asterisk/pjsip_zetronpoc.conf"
+PJSIP_CONF = "/etc/asterisk/pjsip.conf"
 _TOKENS = {}
 
 @contextmanager

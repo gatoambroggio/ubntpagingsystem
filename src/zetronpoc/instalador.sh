@@ -124,27 +124,19 @@ dl "${SRC}/services/zetronpoc-cola.service" "/etc/systemd/system/zetronpoc-cola.
 # ============================ 4. ASTERISK CONFIG ===========================
 echo "==> 4/10 Configurando Asterisk..."
 mkdir -p "${AST_ETC}"
-# pjsip.conf: SOLO incluye el generado por el panel
+# pjsip.conf: self-contained (se regenera desde la BD en el paso 6 / panel admin)
 cat > "${AST_ETC}/pjsip.conf" <<'EOF'
-; ZetronPOC: pjsip_zetronpoc.conf es self-contained (transport + endpoints + registros)
-; Todo se genera desde el panel admin -> Aplicar a Asterisk
-#include pjsip_zetronpoc.conf
-EOF
-
-# extensions.conf: dialplan con IVR en un unico contexto (from-hospital)
-dl "${SRC}/asterisk/extensions.conf" "${AST_ETC}/extensions.conf"
-dl "${SRC}/asterisk/modules.conf" "${AST_ETC}/modules.conf" 2>/dev/null || true
-
-# pjsip_zetronpoc.conf inicial (placeholder; se regenera desde BD al Aplicar)
-if [[ $UPDATE -eq 0 ]] || [[ ! -f "${AST_ETC}/pjsip_zetronpoc.conf" ]]; then
-  cat > "${AST_ETC}/pjsip_zetronpoc.conf" <<'EOF'
-; Placeholder. Use el panel admin -> Extensiones -> Aplicar a Asterisk para generar.
+; ZetronPOC: pjsip.conf es self-contained (transport + endpoints + registros)
+; Se regenera desde el panel admin -> Extensiones -> Aplicar a Asterisk
 [transport-udp]
 type=transport
 protocol=udp
 bind=0.0.0.0:5060
 EOF
-fi
+
+# extensions.conf: dialplan con IVR en un unico contexto (from-hospital)
+dl "${SRC}/asterisk/extensions.conf" "${AST_ETC}/extensions.conf"
+dl "${SRC}/asterisk/modules.conf" "${AST_ETC}/modules.conf" 2>/dev/null || true
 
 chown -R "${AST_USER}:${AST_USER}" "${AST_ETC}" 2>/dev/null || true
 
@@ -175,7 +167,7 @@ try:
 except Exception as e:
     print(f"[WARN] {e}")
 PYEOF
-chown "${AST_USER}:${AST_USER}" "${AST_ETC}/pjsip_zetronpoc.conf" 2>/dev/null || true
+chown "${AST_USER}:${AST_USER}" "${AST_ETC}/pjsip.conf" 2>/dev/null || true
 
 # ============================ 7. LOCUCIONES IVR ============================
 if [[ $UPDATE -eq 0 ]]; then

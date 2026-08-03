@@ -105,7 +105,7 @@ def diagnose():
     # 3 pjsip conf
     conf = ""
     try:
-        with open("/etc/asterisk/pjsip_zetronpoc.conf") as f: conf = f.read()[:4000]
+        with open("/etc/asterisk/pjsip.conf") as f: conf = f.read()[:4000]
     except Exception as e:
         conf = "No existe: %s" % e
     reg = pbx_run("pjsip show registrations")["salida"]
