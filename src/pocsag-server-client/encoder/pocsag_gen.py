@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 # Codificador POCSAG con Filtro Gaussiano para Radios VHF/UHF
+# Dual Rate (Zetron Model 640):
+#   512 baud: WarmUp 750ms  + preambulo 300 bits @ 512 Hz
+#  1200 baud: WarmUp 1500ms + preambulo 300 bits @ 1200 Hz
 import sys, wave, struct, math
 
 SYNC = 0x7CD215D8
 IDLE = 0x7A89C197
 FRAME_SIZE = 2
 BATCH_SIZE = 16
-PREAMBLE_LENGTH = 576
+PREAMBLE_BITS = 300          # Zetron 640: 300 bits de preambulo (ambas velocidades)
 FLAG_MESSAGE = 0x100000
 FUNCTION_ALPHANUMERIC = 0x3
 CRC_BITS = 10
 CRC_GENERATOR = 0b11101101001
 TEXT_BITS_PER_WORD = 20
 TEXT_BITS_PER_CHAR = 7
+
+# WarmUp (silencio antes del preambulo) por velocidad - Zetron Model 640
+WARMUP_MS = {512: 750, 1200: 1500, 2400: 1500}
 
 def crc(input_msg):
     denominator = CRC_GENERATOR << 20
@@ -39,7 +45,10 @@ def address_offset(address):
 
 def encode_transmission(address, message):
     out = []
-    for _ in range(PREAMBLE_LENGTH // 32):
+    # Preambulo: 300 bits de 1s y 0s alternados (patron 0xAAAAAAAA = 32 bits c/u)
+    # 300 bits / 32 = 9.375 -> redondeo a 10 palabras = 320 bits (>= 300, ok para el Zetron)
+    preamble_words = (PREAMBLE_BITS + 31) // 32
+    for _ in range(preamble_words):
         out.append(0xAAAAAAAA)
     start = len(out)
     out.append(SYNC)
@@ -108,6 +117,12 @@ def modulate_gaussian(codewords, baud, sample_rate):
         out.append(struct.pack('<h', amp))
     return b''.join(out)
 
+def generate_warmup(baud, sample_rate):
+    """Genera silencio (amplitud 0) durante el WarmUp del Zetron 640."""
+    warmup_ms = WARMUP_MS.get(baud, 750)
+    warmup_samples = int(sample_rate * warmup_ms / 1000)
+    return b'\x00\x00' * warmup_samples, warmup_ms
+
 def main():
     if len(sys.argv) != 5:
         print("Uso: pocsag_gen.py <cap> <msg> <baud> <out.wav>", file=sys.stderr)
@@ -120,10 +135,11 @@ def main():
         sample_rate = baud * 32
     codewords = encode_transmission(int(cap), msg)
     data = modulate_gaussian(codewords, baud, sample_rate)
+    warmup, warmup_ms = generate_warmup(baud, sample_rate)
     with wave.open(out_path, 'wb') as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sample_rate)
-        w.writeframes(data)
-    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, {len(codewords)} cw)")
+        w.writeframes(warmup + data)
+    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, warmup={warmup_ms}ms, preamble={PREAMBLE_BITS}bits, {len(codewords)} cw)")
     return 0
 
 if __name__ == "__main__":

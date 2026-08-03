@@ -1,6 +1,7 @@
 INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('pocsag_mode','client'),
  ('hospital_pbx_ip',''),
+ ('hospital_pbx_port','5060'),
  ('transport_bind','0.0.0.0:5060'),
  ('transport_protocol','udp'),
  ('codecs','ulaw,alaw'),

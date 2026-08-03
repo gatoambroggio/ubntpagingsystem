@@ -109,9 +109,6 @@ echo "==> 4/10 Configurando pjsip.conf (self-contained)..."
 # pjsip.conf: SOLO incluye pjsip_hospital.conf (que tiene su propio transporte)
 # Esto elimina la dependencia de pjsip_pocsag.conf y evita transportes duplicados
 cat > "${AST_ETC}/pjsip.conf" <<'EOF'
-[modules]
-autoload=yes
-
 ; pjsip_hospital.conf es SELF-CONTAINED: incluye [transport-udp] + endpoints + registros
 ; Todo se genera desde el panel admin (base de datos) -> Aplicar a Asterisk
 #include pjsip_hospital.conf
@@ -149,7 +146,7 @@ if row and row[0] == 'IP_HOSPITAL':
     c.execute("UPDATE config SET valor='' WHERE clave='hospital_pbx_ip'")
     print("[FIX]  hospital_pbx_ip era 'IP_HOSPITAL' (placeholder). Limpiado.")
 # Asegurar config por defecto (INSERT OR IGNORE no pisa valores existentes)
-for k,v in [('hospital_pbx_ip',''),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
+for k,v in [('hospital_pbx_ip',''),('hospital_pbx_port','5060'),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
             ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600')]:
     c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)", (k,v))
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
