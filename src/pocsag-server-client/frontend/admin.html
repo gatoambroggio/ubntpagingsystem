@@ -72,7 +72,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 </div>
 <div class="app" id="app" style="display:none">
   <div class="side">
-    <div class="brand"><div class="logo">🧭</div><div>Pogsac <small style="display:block;color:var(--mut);font-weight:500;font-size:.7rem">v1.0</small></div></div>
+    <div class="brand"><div class="logo">🧭</div><div>Pogsac <small style="display:block;color:var(--mut);font-weight:500;font-size:.7rem">v1.02</small></div></div>
     <button class="burger" onclick="toggleMenu()" aria-label="menu">☰</button>
     <nav>
       <button class="active" onclick="tab('ext',this)">☎ Extensiones</button>
@@ -99,7 +99,7 @@ pre{background:#0a0f1c;border:1px solid var(--line);border-radius:10px;padding:.
 
     <div class="tab active" id="t-ext"><div class="card">
       <h2><span>☎ Extensiones registradas en la central del hospital</span><button class="btn btn-pri btn-sm" onclick="openExt()">+ Nueva extension</button></h2>
-      <div class="hint">Los internos 3000-3003 se registran contra la central VoIP del hospital. Cuando alguien marca uno de estos internos desde la central, el IVR contesta automaticamente. Configura la IP del hospital en Parametros, edita las claves de cada interno y pulsa "Aplicar a Asterisk".</div>
+      <div class="hint">Los internos 2000-2010 se registran contra la central VoIP del hospital (FreePBX). Cuando alguien marca uno de estos internos desde la central, el IVR contesta automaticamente. Configura la IP del hospital en Parametros, edita las claves de cada interno y pulsa "Aplicar a Asterisk". El registro SIP debe quedar en estado Registered.</div>
       <div style="display:flex;gap:.6rem;margin-bottom:.8rem;flex-wrap:wrap">
         <button class="btn btn-warn btn-sm" onclick="aplicarExt()">Aplicar a Asterisk</button>
         <button class="btn btn-sec btn-sm" onclick="loadExt()">🔄 Actualizar</button>

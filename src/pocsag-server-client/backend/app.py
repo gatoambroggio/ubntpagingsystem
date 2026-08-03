@@ -75,7 +75,7 @@ SAFE_CMDS={"status":"core show status","version":"core show version","peers":"pj
            "contacts":"pjsip show contacts","transports":"pjsip show transports",
            "modules":"module show","hints":"core show hints","codecs":"core show codecs",
            "pjsip_settings":"pjsip show settings","core_settings":"core show settings",
-           "channeltypes":"core show channeltypes","endpoint_3000":"pjsip show endpoint 3000",
+           "channeltypes":"core show channeltypes",            "endpoint_2000":"pjsip show endpoint 2000",
            "endpoint_hospital":"pjsip show endpoint hospital-inbound"}
 
 def diagnostico_sip():
@@ -352,7 +352,7 @@ class H(BaseHTTPRequestHandler):
                 ok,msg=generar_pjsip_hospital_conf()
                 if not ok:
                     return jr(self,{"error":msg},400)
-                return jr(self,{"salida":msg+"\n"+ast_run("pjsip reload")+"\n"+ast_run("dialplan reload")})
+                return jr(self,{"salida":msg+"\n"+ast_run("pjsip reload")+"\n"+ast_run("pjsip send register")+"\n"+ast_run("dialplan reload")})
             if p=="/api/pbx/reload":
                 if not self._guard(): return
                 out=ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")

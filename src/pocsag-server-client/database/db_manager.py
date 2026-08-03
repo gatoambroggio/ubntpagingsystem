@@ -184,7 +184,7 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
     exts = listar_extensiones(db_path)
     activos = [e for e in exts if e["activo"]]
     if not activos:
-        return False, "No hay extensiones activas. Habilite al menos una (3000-3003)"
+        return False, "No hay extensiones activas. Habilite al menos una (2000-2010)"
     for e in activos:
         if not (e.get("password") or "").strip():
             return False, f"La extension {e['numero']} no tiene clave configurada"
@@ -205,43 +205,39 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
         "; pjsip_hospital.conf - Generado por panel admin (modo cliente) - NO editar a mano",
         f"; IP central del hospital: {ip}",
         f"; Internos activos: {', '.join(e['numero'] for e in activos)}",
+        "; Patron: un endpoint por extension (match por Request-URI user)",
         "",
-        "; === Transporte UDP (self-contained, no depende de otros archivos) ===",
+        "; === Transporte UDP (self-contained) ===",
         "[transport-udp]",
         "type=transport",
         f"protocol={transport_proto}",
         f"bind={transport_bind}",
         "",
-        "; === Endpoint unico para llamadas entrantes del hospital ===",
-        "[hospital-inbound]",
-        "type=endpoint",
-        "context=pocsag-incoming",
-        "disallow=all",
-        f"allow={codecs}",
-        "transport=transport-udp",
-        "aors=hospital-inbound",
-        "trust_id_inbound=yes",
-        "direct_media=no",
-        "force_rport=yes",
-        "rtp_symmetric=yes",
-        "inband_progress=yes",
-        "allow_subscribe=no",
-        "",
-        "[hospital-inbound]",
-        "type=aor",
-        "max_contacts=0",
-        "",
-        "; Identify: asocia la IP del hospital al endpoint inbound",
-        "[hospital-ident]",
-        "type=identify",
-        "endpoint=hospital-inbound",
-        f"match={ip}",
-        "",
     ]
     for e in activos:
         num = e["numero"]; pw = e["password"].strip()
         lines += [
-            f"; === Registro del interno {num} contra {ip} ===",
+            f"; === Endpoint + registro del interno {num} contra {ip} ===",
+            f"[{num}]",
+            "type=endpoint",
+            "context=pocsag-incoming",
+            "disallow=all",
+            f"allow={codecs}",
+            "transport=transport-udp",
+            f"aors={num}",
+            "trust_id_inbound=yes",
+            "direct_media=no",
+            "force_rport=yes",
+            "rtp_symmetric=yes",
+            "inband_progress=yes",
+            "allow_subscribe=no",
+            "rewrite_contact=yes",
+            "",
+            f"[{num}]",
+            "type=aor",
+            "max_contacts=1",
+            "remove_existing=yes",
+            "",
             f"[reg-{num}]",
             "type=registration",
             "transport=transport-udp",
@@ -261,7 +257,7 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
         ]
     try:
         with open(conf, "w") as f: f.write("\n".join(lines) + "\n")
-        return True, f"Generado: transport + {len(activos)} registro(s) contra {ip}"
+        return True, f"Generado: {len(activos)} endpoint(s) + registro(s) contra {ip}"
     except PermissionError:
         return False, "No se pudo escribir pjsip_hospital.conf (permisos)"
 

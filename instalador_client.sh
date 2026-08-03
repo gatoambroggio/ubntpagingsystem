@@ -2,7 +2,7 @@
 # ============================================================================
 # instalador_client.sh - Pogsac v1.0 (paginacion hospitalaria POCSAG, modo cliente)
 # ============================================================================
-# Registra internos (3000-3003) contra la central VoIP del hospital.
+# Registra internos (2000-2010) contra la central VoIP del hospital (FreePBX).
 # TOTALMENTE SELF-CONTAINED: no depende de instalador.sh ni de pjsip_pocsag.conf.
 # Toda la configuracion se maneja desde la base de datos via panel admin.
 #
@@ -19,7 +19,7 @@ SRC="${REPO}/src/pocsag-server-client"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/pocsag-server"
 DB="${APP_DIR}/database/pocsag.db"
-VERSION="1.0"
+VERSION="1.02"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
