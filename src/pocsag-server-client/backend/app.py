@@ -71,7 +71,12 @@ def estado_registros_api():
 
 SAFE_CMDS={"status":"core show status","version":"core show version","peers":"pjsip show endpoints",
            "channels":"core show channels","uptime":"core show uptime","dialplan":"dialplan show",
-           "registrations":"pjsip show registrations"}
+           "registrations":"pjsip show registrations","aors":"pjsip show aors",
+           "contacts":"pjsip show contacts","transports":"pjsip show transports",
+           "modules":"module show","hints":"core show hints","codecs":"core show codecs",
+           "pjsip_settings":"pjsip show settings","core_settings":"core show settings",
+           "channeltypes":"core show channeltypes","endpoint_3000":"pjsip show endpoint 3000",
+           "endpoint_hospital":"pjsip show endpoint hospital-inbound"}
 
 def rows_from_sheet(body, filename):
     name=(filename or "").lower(); rows=[]
@@ -316,6 +321,25 @@ class H(BaseHTTPRequestHandler):
                 if not self._guard(): return
                 out=ast_run("core restart now")
                 return jr(self,{"salida":out})
+            if p=="/api/pbx/force-register":
+                if not self._guard(): return
+                out=ast_run("pjsip send register")
+                return jr(self,{"salida":out})
+            if p=="/api/pbx/unregister":
+                if not self._guard(): return
+                out=ast_run("pjsip unregister")
+                return jr(self,{"salida":out})
+            if p=="/api/pbx/run":
+                if not self._guard(): return
+                d=read_body(self); cmd=(d.get("cmd","") or "").strip()
+                if not cmd: return jr(self,{"error":"comando vacio"},400)
+                # Whitelist de prefijos permitidos
+                allowed_prefixes=("pjsip show","pjsip send","pjsip unregister","pjsip reload",
+                                  "core show","core restart","dialplan show","dialplan reload",
+                                  "module show","module load","module unload")
+                if not any(cmd.lower().startswith(p) for p in allowed_prefixes):
+                    return jr(self,{"error":"comando no permitido. Use: pjsip show, core show, dialplan, module show, etc."},400)
+                return jr(self,{"salida":ast_run(cmd)})
             if p=="/api/cola/reintentar":
                 if not self._guard(): return
                 d=read_body(self); reintentar_cola(int(d["id"]))

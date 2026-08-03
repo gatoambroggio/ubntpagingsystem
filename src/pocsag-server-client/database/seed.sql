@@ -23,6 +23,10 @@ INSERT OR IGNORE INTO config (clave, valor) VALUES
  ('smtp_secure','tls'),
  ('backup_email',''),
  ('backup_schedules','[]'),
+ ('warmup_512_ms','750'),
+ ('warmup_1200_ms','1500'),
+ ('warmup_2400_ms','1500'),
+ ('preamble_bits','300'),
  ('version','1.0client');
 
 INSERT OR IGNORE INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,descripcion) VALUES

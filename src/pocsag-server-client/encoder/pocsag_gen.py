@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # Codificador POCSAG con Filtro Gaussiano para Radios VHF/UHF
-# Dual Rate (Zetron Model 640):
-#   512 baud: WarmUp 750ms  + preambulo 300 bits @ 512 Hz
-#  1200 baud: WarmUp 1500ms + preambulo 300 bits @ 1200 Hz
+# Dual Rate (Zetron Model 640) - parametros leidos desde la base de datos:
+#   512 baud: WarmUp configurable + preambulo configurable @ 512 Hz
+#  1200 baud: WarmUp configurable + preambulo configurable @ 1200 Hz
+# Si la BD no esta disponible, usa defaults del Zetron 640.
 import sys, wave, struct, math
 
 SYNC = 0x7CD215D8
 IDLE = 0x7A89C197
 FRAME_SIZE = 2
 BATCH_SIZE = 16
-PREAMBLE_BITS = 300          # Zetron 640: 300 bits de preambulo (ambas velocidades)
 FLAG_MESSAGE = 0x100000
 FUNCTION_ALPHANUMERIC = 0x3
 CRC_BITS = 10
@@ -17,8 +17,39 @@ CRC_GENERATOR = 0b11101101001
 TEXT_BITS_PER_WORD = 20
 TEXT_BITS_PER_CHAR = 7
 
-# WarmUp (silencio antes del preambulo) por velocidad - Zetron Model 640
-WARMUP_MS = {512: 750, 1200: 1500, 2400: 1500}
+# Defaults del Zetron Model 640 (se usan si la BD no responde)
+DEFAULT_WARMUP_MS = {512: 750, 1200: 1500, 2400: 1500}
+DEFAULT_PREAMBLE_BITS = 300
+
+def get_encoder_config():
+    """Lee la configuracion Dual Rate desde la base de datos.
+    Devuelve dict con warmup_ms (por baud) y preamble_bits."""
+    cfg = {
+        'warmup_512': DEFAULT_WARMUP_MS[512],
+        'warmup_1200': DEFAULT_WARMUP_MS[1200],
+        'warmup_2400': DEFAULT_WARMUP_MS[2400],
+        'preamble_bits': DEFAULT_PREAMBLE_BITS,
+    }
+    try:
+        sys.path.insert(0, "/opt/pocsag-server")
+        sys.path.insert(0, "/opt/pocsag-server/database")
+        from db_manager import get_config
+        for k, dkey in [('warmup_512_ms', 'warmup_512'), ('warmup_1200_ms', 'warmup_1200'),
+                        ('warmup_2400_ms', 'warmup_2400'), ('preamble_bits', 'preamble_bits')]:
+            val = get_config(k, "")
+            if val:
+                try: cfg[dkey] = int(val)
+                except (ValueError, TypeError): pass
+    except Exception:
+        pass
+    return cfg
+
+ENC_CFG = None
+
+def get_preamble_bits():
+    global ENC_CFG
+    if ENC_CFG is None: ENC_CFG = get_encoder_config()
+    return ENC_CFG.get('preamble_bits', DEFAULT_PREAMBLE_BITS)
 
 def crc(input_msg):
     denominator = CRC_GENERATOR << 20
@@ -45,9 +76,9 @@ def address_offset(address):
 
 def encode_transmission(address, message):
     out = []
-    # Preambulo: 300 bits de 1s y 0s alternados (patron 0xAAAAAAAA = 32 bits c/u)
-    # 300 bits / 32 = 9.375 -> redondeo a 10 palabras = 320 bits (>= 300, ok para el Zetron)
-    preamble_words = (PREAMBLE_BITS + 31) // 32
+    # Preambulo: N bits de 1s y 0s alternados (patron 0xAAAAAAAA = 32 bits c/u)
+    preamble_bits = get_preamble_bits()
+    preamble_words = max(1, (preamble_bits + 31) // 32)
     for _ in range(preamble_words):
         out.append(0xAAAAAAAA)
     start = len(out)
@@ -118,8 +149,11 @@ def modulate_gaussian(codewords, baud, sample_rate):
     return b''.join(out)
 
 def generate_warmup(baud, sample_rate):
-    """Genera silencio (amplitud 0) durante el WarmUp del Zetron 640."""
-    warmup_ms = WARMUP_MS.get(baud, 750)
+    """Genera silencio (amplitud 0) durante el WarmUp configurado en la BD."""
+    global ENC_CFG
+    if ENC_CFG is None: ENC_CFG = get_encoder_config()
+    key = f'warmup_{baud}'
+    warmup_ms = ENC_CFG.get(key, DEFAULT_WARMUP_MS.get(baud, 750))
     warmup_samples = int(sample_rate * warmup_ms / 1000)
     return b'\x00\x00' * warmup_samples, warmup_ms
 
@@ -136,10 +170,11 @@ def main():
     codewords = encode_transmission(int(cap), msg)
     data = modulate_gaussian(codewords, baud, sample_rate)
     warmup, warmup_ms = generate_warmup(baud, sample_rate)
+    preamble_bits = get_preamble_bits()
     with wave.open(out_path, 'wb') as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sample_rate)
         w.writeframes(warmup + data)
-    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, warmup={warmup_ms}ms, preamble={PREAMBLE_BITS}bits, {len(codewords)} cw)")
+    print(f"OK: {out_path} ({baud} bps, {sample_rate} Hz, warmup={warmup_ms}ms, preamble={preamble_bits}bits, {len(codewords)} cw)")
     return 0
 
 if __name__ == "__main__":

@@ -106,6 +106,11 @@ dl "${SRC}/asterisk/modules.conf" "${AST_ETC}/modules.conf" 2>/dev/null || true
 
 # ============================ 4. PJSIP.CONF CLEAN ==========================
 echo "==> 4/10 Configurando pjsip.conf (self-contained)..."
+# Renombrar pjsip_pocsag.conf viejo para evitar conflictos de transporte duplicado
+if [[ -f "${AST_ETC}/pjsip_pocsag.conf" ]] && ! grep -q "pjsip_pocsag" "${AST_ETC}/pjsip.conf" 2>/dev/null; then
+  mv "${AST_ETC}/pjsip_pocsag.conf" "${AST_ETC}/pjsip_pocsag.conf.bak" 2>/dev/null || true
+  echo "  [FIX] pjsip_pocsag.conf renombrado a .bak (evita transporte duplicado)"
+fi
 # pjsip.conf: SOLO incluye pjsip_hospital.conf (que tiene su propio transporte)
 # Esto elimina la dependencia de pjsip_pocsag.conf y evita transportes duplicados
 cat > "${AST_ETC}/pjsip.conf" <<'EOF'
@@ -147,7 +152,8 @@ if row and row[0] == 'IP_HOSPITAL':
     print("[FIX]  hospital_pbx_ip era 'IP_HOSPITAL' (placeholder). Limpiado.")
 # Asegurar config por defecto (INSERT OR IGNORE no pisa valores existentes)
 for k,v in [('hospital_pbx_ip',''),('hospital_pbx_port','5060'),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
-            ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600')]:
+            ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600'),
+            ('warmup_512_ms','750'),('warmup_1200_ms','1500'),('warmup_2400_ms','1500'),('preamble_bits','300')]:
     c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)", (k,v))
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
 # Asegurar que existen los internos 3000-3003 (no pisar claves existentes)
