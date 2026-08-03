@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================================
-# instalador_client.sh - Sistema POCSAG variante CLIENTE (v1.0client)
+# instalador_client.sh - Sistema POCSAG variante CLIENTE (v1.0client) STANDALONE
 # ============================================================================
-# Registra internos (3000-3003 etc.) contra la central VoIP del hospital.
-# Cuando el hospital marca uno de esos internos, el IVR POCSAG contesta.
+# Registra internos (3000-3003) contra la central VoIP del hospital.
+# TOTALMENTE SELF-CONTAINED: no depende de instalador.sh ni de pjsip_pocsag.conf.
+# Toda la configuracion se maneja desde la base de datos via panel admin.
 #
-# Arquitectura: instala la base con instalador.sh y luego REEMPLAZA (no parchea)
-# app.py y admin.html con versiones cliente standalone que ya incluyen
-# generar_pjsip_hospital_conf() y estado_registros_api() nativos.
-#
-# Uso (una linea desde GitHub):
+# Instalacion (una linea):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash
 #
-# Actualizar solo la config cliente (sin reinstalar la base):
+# Actualizar (sin reinstalar Asterisk/deps):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash -s -- --update
-#
-# DESPUES DE INSTALAR: desde el panel admin -> Parametros -> cargar la IP real
-# del hospital -> Extensiones -> editar claves -> Aplicar a Asterisk.
 # ============================================================================
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main"
+SRC="${REPO}/src/pocsag-server-client"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/pocsag-server"
 DB="${APP_DIR}/database/pocsag.db"
@@ -39,91 +34,210 @@ dl(){ # dl <url> <dest>
   if ! curl -fsSL "$1" -o "$2"; then err "No se pudo descargar $1"; exit 1; fi
 }
 
-# ============================ 1. SISTEMA BASE ================================
+export TZ="America/Argentina/Cordoba"
+timedatectl set-timezone "America/Argentina/Cordoba" 2>/dev/null || true
+
+# ============================ 1. DEPENDENCIAS ================================
 if [[ $UPDATE -eq 0 ]]; then
-  echo "==> 1/6 Instalando sistema base POCSAG (servidor autonomo)..."
-  TMP="$(mktemp -d)"
-  dl "${REPO}/instalador.sh" "$TMP/instalador.sh"
-  bash "$TMP/instalador.sh"
-  rm -rf "$TMP"
+  echo "==> 1/10 Dependencias base..."
+  apt-get update -y
+  apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git \
+    libgpiod2 gpiod curl ca-certificates logrotate espeak zip \
+    python3-dev build-essential wget asterisk 2>&1 || { err "Fallo instalacion de paquetes."; exit 1; }
+  pip3 install --break-system-packages openpyxl xlrd 2>&1 || warn "openpyxl/xlrd no instalados"
 else
-  echo "==> 1/6 Modo --update: se saltea la instalacion base."
+  echo "==> 1/10 Dependencias (omitidas en --update)"
 fi
 
-# ============================ 2. REEMPLAZAR APP.PY ===========================
-echo "==> 2/6 Reemplazando app.py con version cliente (v${VERSION})..."
-dl "${REPO}/src/pocsag-server-client/backend/app.py" "${APP_DIR}/backend/app.py"
+AST_USER="asterisk"
+mkdir -p /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds
+chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/agi-bin 2>/dev/null || true
+
+# ============================ 2. ESTRUCTURA =================================
+echo "==> 2/10 Estructura de directorios..."
+mkdir -p "${APP_DIR}"/{asterisk,agi,encoder,database,services,scripts,config,backend,frontend,docs,tests,audio,logs,bin}
+touch "${APP_DIR}/logs/"{pocsag,cola,backup,health,scheduler,smtp}.log 2>/dev/null || true
+
+# ============================ 3. DESCARGAR ARCHIVOS =========================
+echo "==> 3/10 Descargando archivos del sistema cliente..."
+
+# Backend
+dl "${SRC}/backend/app.py" "${APP_DIR}/backend/app.py"
 chmod +x "${APP_DIR}/backend/app.py"
 
-# ============================ 3. REEMPLAZAR ADMIN.HTML ======================
-echo "==> 3/6 Reemplazando admin.html con version cliente..."
-dl "${REPO}/src/pocsag-server-client/frontend/admin.html" "${APP_DIR}/frontend/admin.html"
+# Frontend
+dl "${SRC}/frontend/admin.html" "${APP_DIR}/frontend/admin.html"
+dl "${SRC}/frontend/index.html" "${APP_DIR}/frontend/index.html"
 
-# ============================ 4. CONFIG ASTERISK ============================
-echo "==> 4/6 Configurando Asterisk cliente..."
-mkdir -p "$AST_ETC"
-# Dialplan autocontenido (IVR incluido) - siempre se actualiza (es estatico)
-dl "${REPO}/src/pocsag-server-client/asterisk/extensions_hospital.conf" "${AST_ETC}/extensions_hospital.conf"
-# pjsip_hospital.conf: solo descargar template en instalacion nueva.
-# En --update NO pisar el archivo existente (tiene la IP y claves reales).
-# Se regenera desde la DB en el paso 5 con generar_pjsip_hospital_conf().
+# Database
+dl "${SRC}/database/db_manager.py" "${APP_DIR}/database/db_manager.py"
+chmod +x "${APP_DIR}/database/db_manager.py"
+dl "${SRC}/database/schema.sql" "${APP_DIR}/database/schema.sql"
+dl "${SRC}/database/seed.sql" "${APP_DIR}/database/seed.sql"
+
+# AGI
+dl "${SRC}/agi/pocsag_handler.py" "${APP_DIR}/agi/pocsag_handler.py"
+dl "${SRC}/agi/pocsag_check.py" "${APP_DIR}/agi/pocsag_check.py"
+dl "${SRC}/agi/cola_worker.py" "${APP_DIR}/agi/cola_worker.py"
+chmod +x "${APP_DIR}/agi/"*.py
+cp "${APP_DIR}/agi/pocsag_handler.py" "${APP_DIR}/agi/pocsag_check.py" /var/lib/asterisk/agi-bin/
+chmod +x /var/lib/asterisk/agi-bin/*.py
+chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/agi-bin 2>/dev/null || true
+
+# Encoder
+dl "${SRC}/encoder/pocsag_gen.py" "${APP_DIR}/encoder/pocsag_gen.py"
+chmod +x "${APP_DIR}/encoder/pocsag_gen.py"
+
+# Scripts
+dl "${SRC}/scripts/ptt_on.sh" "${APP_DIR}/scripts/ptt_on.sh"
+dl "${SRC}/scripts/ptt_off.sh" "${APP_DIR}/scripts/ptt_off.sh"
+dl "${SRC}/scripts/healthcheck.sh" "${APP_DIR}/scripts/healthcheck.sh"
+dl "${SRC}/scripts/limpiar_audio.sh" "${APP_DIR}/scripts/limpiar_audio.sh"
+chmod +x "${APP_DIR}/scripts/"*.sh
+
+# Services
+dl "${SRC}/services/pocsag-api.service" "/etc/systemd/system/pocsag-api.service"
+dl "${SRC}/services/pocsag-cola.service" "/etc/systemd/system/pocsag-cola.service"
+dl "${SRC}/services/pocsag-monitor.service" "/etc/systemd/system/pocsag-monitor.service"
+
+# Asterisk configs
+dl "${SRC}/asterisk/extensions_hospital.conf" "${AST_ETC}/extensions_hospital.conf"
+dl "${SRC}/asterisk/modules.conf" "${AST_ETC}/modules.conf" 2>/dev/null || true
+
+# ============================ 4. PJSIP.CONF CLEAN ==========================
+echo "==> 4/10 Configurando pjsip.conf (self-contained)..."
+# pjsip.conf: SOLO incluye pjsip_hospital.conf (que tiene su propio transporte)
+# Esto elimina la dependencia de pjsip_pocsag.conf y evita transportes duplicados
+cat > "${AST_ETC}/pjsip.conf" <<'EOF'
+[modules]
+autoload=yes
+
+; pjsip_hospital.conf es SELF-CONTAINED: incluye [transport-udp] + endpoints + registros
+; Todo se genera desde el panel admin (base de datos) -> Aplicar a Asterisk
+#include pjsip_hospital.conf
+EOF
+
+# pjsip_hospital.conf: solo descargar template si no existe (en --update se regenera desde BD)
 if [[ $UPDATE -eq 0 ]] || [[ ! -f "${AST_ETC}/pjsip_hospital.conf" ]]; then
-  dl "${REPO}/src/pocsag-server-client/asterisk/pjsip_hospital.conf" "${AST_ETC}/pjsip_hospital.conf"
+  dl "${SRC}/asterisk/pjsip_hospital.conf" "${AST_ETC}/pjsip_hospital.conf"
 fi
 
-# Incluir desde extensions.conf y pjsip.conf si no estan ya
-grep -q 'extensions_hospital.conf' "${AST_ETC}/extensions.conf" 2>/dev/null || echo '#include extensions_hospital.conf' >> "${AST_ETC}/extensions.conf"
-grep -q 'pjsip_hospital.conf' "${AST_ETC}/pjsip.conf" 2>/dev/null || echo '#include pjsip_hospital.conf' >> "${AST_ETC}/pjsip.conf"
+# extensions.conf: incluye extensions_hospital.conf
+cat > "${AST_ETC}/extensions.conf" <<'EOF'
+[general]
+priorityjumping=no
 
-# ============================ 5. MIGRACION BD ================================
-echo "==> 5/6 Migrando base a modo cliente (internos 3000-3003)..."
+; IVR autocontenido del cliente (contexto pocsag-incoming + pocsag-ivr)
+#include extensions_hospital.conf
+EOF
+
+chown -R "${AST_USER}:${AST_USER}" "${AST_ETC}" 2>/dev/null || true
+
+# ============================ 5. BASE DE DATOS ==============================
+echo "==> 5/10 Inicializando base de datos..."
+if [[ $UPDATE -eq 0 ]] || [[ ! -f "${DB}" ]]; then
+  python3 "${APP_DIR}/database/db_manager.py" init
+fi
+# Forzar modo cliente y version (NO pisar hospital_pbx_ip si ya tiene un valor real)
 python3 - <<PYEOF
 import sqlite3
 c = sqlite3.connect('${DB}')
-# Quitar extensiones del servidor autonomo (101, 2184-2187)
-c.execute("DELETE FROM extensiones WHERE numero IN ('101','2184','2185','2186','2187')")
-# Insertar los 4 internos del hospital (si no existen)
+c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('pocsag_mode','client')")
+# Limpiar valor IP_HOSPITAL corrupto dejado por instalador viejo
+row = c.execute("SELECT valor FROM config WHERE clave='hospital_pbx_ip'").fetchone()
+if row and row[0] == 'IP_HOSPITAL':
+    c.execute("UPDATE config SET valor='' WHERE clave='hospital_pbx_ip'")
+    print("[FIX]  hospital_pbx_ip era 'IP_HOSPITAL' (placeholder). Limpiado.")
+# Asegurar config por defecto (INSERT OR IGNORE no pisa valores existentes)
+for k,v in [('hospital_pbx_ip',''),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
+            ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600')]:
+    c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)", (k,v))
+c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
+# Asegurar que existen los internos 3000-3003 (no pisar claves existentes)
 for n in ('3000','3001','3002','3003'):
     c.execute("INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion,activo) VALUES (?,?,?,?,1)",
               (n, 'CAMBIAR_PASSWORD_' + n, 'pocsag-incoming', 'Interno hospital ' + n))
-# Marcar modo cliente y version
-# IMPORTANTE: hospital_pbx_ip usa INSERT OR IGNORE para NO sobreescribir
-# la IP real que el usuario ya configuro desde el panel admin.
-c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('pocsag_mode','client')")
-c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES('hospital_pbx_ip','IP_HOSPITAL')")
-c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
 c.commit(); c.close()
 PYEOF
+chmod 640 "${DB}" 2>/dev/null || true
+chown "${AST_USER}:${AST_USER}" "${DB}" 2>/dev/null || true
 
-# Regenerar pjsip_hospital.conf desde la DB (usa la IP y claves reales)
-# Esto reconstruye el archivo con la config actual sin pisar los datos
-python3 - <<'PYEOF2'
+# ============================ 6. GENERAR PJSIP DESDE BD ====================
+echo "==> 6/10 Generando pjsip_hospital.conf desde la base de datos..."
+python3 - <<'PYEOF'
 import sys, os
-sys.path.insert(0, "/opt/pocsag-server/backend")
 sys.path.insert(0, "/opt/pocsag-server")
+sys.path.insert(0, "/opt/pocsag-server/database")
 os.chdir("/opt/pocsag-server")
 try:
-    from app import generar_pjsip_hospital_conf
+    from db_manager import generar_pjsip_hospital_conf
     ok, msg = generar_pjsip_hospital_conf()
     if ok:
-        print(f"[OK]   pjsip_hospital.conf regenerado: {msg}")
+        print(f"[OK]   {msg}")
     else:
         print(f"[WARN] {msg}")
         print("       Configure la IP y claves desde el panel admin -> Aplicar a Asterisk")
 except Exception as e:
-    print(f"[WARN] No se pudo regenerar pjsip_hospital.conf: {e}")
-PYEOF2
+    print(f"[WARN] No se pudo generar pjsip_hospital.conf: {e}")
+PYEOF
+chown "${AST_USER}:${AST_USER}" "${AST_ETC}/pjsip_hospital.conf" 2>/dev/null || true
 
-# ============================ 6. RELOAD =====================================
-echo "==> 6/6 Recargando servicios..."
-chown -R asterisk:asterisk "${APP_DIR}" "${AST_ETC}/pjsip_hospital.conf" "${AST_ETC}/extensions_hospital.conf" 2>/dev/null || true
+# ============================ 7. LOCUCIONES IVR ============================
+if [[ $UPDATE -eq 0 ]]; then
+  echo "==> 7/10 Generando locuciones del IVR..."
+  gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
+    espeak -v es -s 160 "$2" -w "${out%.gsm}.wav" 2>/dev/null && sox "${out%.gsm}.wav" -r 8000 -c 1 "$out" 2>/dev/null || warn "No se pudo generar $1"
+    rm -f "${out%.gsm}.wav"; }
+  gen despues-del-tono-marque-codigo "Despues del tono marque el numero de codigo"
+  gen despues-de-la-senal-su-mensaje "Despues de la senal marque su mensaje"
+  gen codigo-inexistente "Codigo inexistente"
+  gen marque-otro-codigo "Por favor marque otro codigo"
+  gen mensaje-vacio "Mensaje vacio"
+  gen confirmado "Mensaje enviado"
+  gen error-envio "Error de envio"
+  sox -n -r 8000 -c 1 "${APP_DIR}/audio/beep.gsm" synth 0.2 sine 1000 2>/dev/null || warn "beep no generado"
+  cp "${APP_DIR}"/audio/*.gsm /var/lib/asterisk/sounds/ 2>/dev/null || true
+  chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/sounds 2>/dev/null || true
+else
+  echo "==> 7/10 Locuciones IVR (omitidas en --update)"
+fi
+
+# ============================ 8. PERMISOS ==================================
+echo "==> 8/10 Ajustando permisos..."
+chown -R "${AST_USER}:${AST_USER}" "${APP_DIR}" 2>/dev/null || true
+chown -R "${AST_USER}:${AST_USER}" "${AST_ETC}" 2>/dev/null || true
+
+# ============================ 9. SERVICIOS + CRON ==========================
+echo "==> 9/10 Activando servicios..."
+cat > /etc/logrotate.d/pocsag <<EOF
+${APP_DIR}/logs/*.log { daily rotate 14 compress missingok notifempty }
+EOF
+cat > /etc/cron.d/pocsag-cleanup <<'EOF'
+0 3 * * * root /opt/pocsag-server/scripts/limpiar_audio.sh 7 >/dev/null 2>&1
+EOF
+chmod 644 /etc/cron.d/pocsag-cleanup
+systemctl daemon-reload
+systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
+asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
 asterisk -rx "pjsip reload" 2>/dev/null || true
-asterisk -rx "dialplan reload" 2>/dev/null || true
-systemctl restart pocsag-api 2>/dev/null || true
+systemctl restart pocsag-api 2>/dev/null || warn "API no pudo reiniciarse"
+systemctl enable pocsag-api 2>/dev/null || true
 systemctl restart pocsag-cola 2>/dev/null || true
+systemctl enable pocsag-cola 2>/dev/null || true
+systemctl restart pocsag-monitor 2>/dev/null || true
+systemctl enable pocsag-monitor 2>/dev/null || true
+sleep 2
+
+# ============================ 10. CHEQUEO =================================
+echo "==> 10/10 Chequeo final..."
+if curl -sf "http://localhost:8080/api/health" >/dev/null 2>&1; then
+  log "API responde en http://localhost:8080"
+else
+  warn "API no responde aun. Verifique: systemctl status pocsag-api"
+fi
 
 echo "--------------------------------------------"
-log "Sistema POCSAG cliente v${VERSION} instalado."
+log "Sistema POCSAG cliente v${VERSION} instalado (standalone)."
 echo ""
 echo "  Panel publico: http://localhost:8080/"
 echo "  Panel admin  : http://localhost:8080/admin  (admin / admin123)"
@@ -137,3 +251,7 @@ echo ""
 echo "  Verificar por consola:"
 echo "    sudo asterisk -rx 'pjsip show registrations'"
 echo "    sudo asterisk -rx 'dialplan show pocsag-incoming'"
+echo "    cat /etc/asterisk/pjsip_hospital.conf"
+echo ""
+echo "  Actualizar (sin perder config):"
+echo "    curl -fsSL ${REPO}/instalador_client.sh | sudo bash -s -- --update"
