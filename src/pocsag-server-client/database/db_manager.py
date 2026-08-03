@@ -251,7 +251,6 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
             f"retry_interval={retry_interval}",
             f"expiration={expiration}",
             f"contact_user={num}",
-            f"from_user={num}",
             "",
             f"[auth-{num}]",
             "type=auth",
