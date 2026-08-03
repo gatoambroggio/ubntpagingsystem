@@ -194,7 +194,12 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
     retry_interval = cfg.get("retry_interval", "60")
     expiration = cfg.get("expiration", "3600")
     pbx_port = (cfg.get("hospital_pbx_port", "5060") or "5060").strip()
-    sip_target = f"{ip}:{pbx_port}"
+    # Solo incluir el puerto en el URI si NO es el default 5060
+    # (muchas centrales rechazan el puerto explicito en el REGISTER)
+    if pbx_port == "5060":
+        sip_target = ip
+    else:
+        sip_target = f"{ip}:{pbx_port}"
     conf = "/etc/asterisk/pjsip_hospital.conf"
     lines = [
         "; pjsip_hospital.conf - Generado por panel admin (modo cliente) - NO editar a mano",
@@ -231,17 +236,6 @@ def generar_pjsip_hospital_conf(db_path=DEFAULT_DB):
         "type=identify",
         "endpoint=hospital-inbound",
         f"match={ip}",
-        "",
-        "; === Endpoint anonimo de respaldo (si el identify no coincide) ===",
-        "; Atrapa llamadas no identificadas y las enruta al IVR igual",
-        "[anonymous]",
-        "type=endpoint",
-        "context=pocsag-incoming",
-        "disallow=all",
-        f"allow={codecs}",
-        "transport=transport-udp",
-        "direct_media=no",
-        "inband_progress=yes",
         "",
     ]
     for e in activos:
