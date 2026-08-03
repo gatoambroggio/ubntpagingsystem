@@ -44,10 +44,10 @@ echo "     Panel admin  : http://localhost:8080/admin"
 
 const INCLUDES = [
   { icon: RadioTower, label: "10 internos hacia FreePBX" },
-  { icon: Cpu, label: "Encoder POCSAG configurable" },
+  { icon: Cpu, label: "Encoder Zetron 640 (BCH real)" },
   { icon: Server, label: "Asterisk + PJSIP cliente" },
   { icon: Database, label: "SQLite + bitacora" },
-  { icon: Boxes, label: "Panel tipo FreePBX" },
+  { icon: Boxes, label: "Panel futurista + FreePBX" },
   { icon: ShieldCheck, label: "IVR que contesta (*99)" },
 ];
 
@@ -164,7 +164,7 @@ export default function Descarga() {
           </div>
           <div className="leading-tight">
             <div className="font-display font-bold text-slate-900">ZetronPOC</div>
-            <div className="text-[11px] text-slate-500 -mt-0.5">Paginacion hospitalaria v1.0</div>
+            <div className="text-[11px] text-slate-500 -mt-0.5">Zetron 640 / DaptX-Xtra v2.0</div>
           </div>
         </div>
         <a
@@ -201,7 +201,7 @@ export default function Descarga() {
           Paginacion hospitalaria
           <br />
           <span className="bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 bg-clip-text text-transparent">
-            ZetronPOC sobre VoIP, lista para usar
+            Zetron 640 · DaptX-Xtra sobre VoIP
           </span>
         </motion.h1>
 
@@ -453,7 +453,7 @@ export default function Descarga() {
 
       <footer className="relative z-10 max-w-5xl mx-auto px-6 mt-10 mb-10 flex items-center justify-center gap-2 text-xs text-slate-400">
         <Server className="w-3.5 h-3.5" />
-        Despliegue en Ubuntu Server 22.04 LTS &middot; ZetronPOC v1.0 sobre VoIP
+        Despliegue en Ubuntu Server 22.04 LTS &middot; ZetronPOC v2.0 · Zetron 640 / DaptX-Xtra
       </footer>
     </div>
   );

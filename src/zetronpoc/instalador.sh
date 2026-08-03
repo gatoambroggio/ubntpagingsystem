@@ -18,7 +18,7 @@ SRC="${REPO}/src/zetronpoc"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/zetronpoc"
 DB="${APP_DIR}/database/zetronpoc.db"
-VERSION="1.0"
+VERSION="2.0"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
@@ -73,8 +73,9 @@ log "Sistema anterior limpio."
 if [[ $UPDATE -eq 0 ]]; then
   echo "==> 1/10 Dependencias base..."
   apt-get update -y
-  apt-get install -y sqlite3 python3 alsa-utils sox git curl ca-certificates \
+  apt-get install -y sqlite3 python3 python3-pip alsa-utils sox git curl ca-certificates \
     logrotate espeak gpiod libgpiod2 asterisk 2>&1 || { err "Fallo instalacion de paquetes."; exit 1; }
+  pip3 install --break-system-packages openpyxl xlrd 2>&1 || warn "openpyxl/xlrd no instalados (import Excel limitado a CSV)"
 else
   echo "==> 1/10 Dependencias (omitidas en --update)"
 fi
@@ -131,7 +132,7 @@ EOF
 dl "${SRC}/asterisk/extensions.conf" "${AST_ETC}/extensions.conf"
 dl "${SRC}/asterisk/modules.conf" "${AST_ETC}/modules.conf" 2>/dev/null || true
 
-# pjsip_zetronpoc.conf inicial (placeholder; se regenera desde BD)
+# pjsip_zetronpoc.conf inicial (placeholder; se regenera desde BD al Aplicar)
 if [[ $UPDATE -eq 0 ]] || [[ ! -f "${AST_ETC}/pjsip_zetronpoc.conf" ]]; then
   cat > "${AST_ETC}/pjsip_zetronpoc.conf" <<'EOF'
 ; Placeholder. Use el panel admin -> Extensiones -> Aplicar a Asterisk para generar.

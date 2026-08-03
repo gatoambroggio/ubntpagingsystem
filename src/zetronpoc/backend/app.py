@@ -1,275 +1,282 @@
 #!/usr/bin/env python3
-"""app.py - ZetronPOC v1.0 - API REST (stdlib http.server).
-Gestiona extensiones (panel tipo FreePBX), config, PBX, envios y cola."""
-import os, sys, json, csv, io, subprocess, tempfile
+"""
+app.py - ZetronPOC v2.0 - API REST + servidor de estaticos.
+http.server puro (sin Flask) para maxima portabilidad. Puerto 8080.
+"""
+import os, sys, json, subprocess, io, time, csv, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from socketserver import ThreadingMixIn
 
 APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
 sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "database"))
-from db_manager import (listar_extensiones, crear_extension, actualizar_extension, borrar_extension,
-    generar_pjsip_conf, all_config, set_config,
-    listar_pagers, buscar_pagers, crear_pager, actualizar_pager, toggle_pager, borrar_pager,
-    listar_grupos, buscar_grupos, crear_grupo, actualizar_grupo, borrar_grupo,
-    enviar_mensaje, historial, login_validar, verificar_token, cerrar_sesion,
-    listar_cola, estado_cola, reintentar_cola, limpiar_cola,
-    backup_db, restore_db, registrar_auditoria, listar_auditoria, estadisticas, leer_logs)
+import db_manager as db
 
-HOST=os.environ.get("ZETRONPOC_API_HOST","0.0.0.0")
-PORT=int(os.environ.get("ZETRONPOC_API_PORT","8080"))
-FRONT=os.path.join(APP_DIR,"frontend")
+HOST, PORT = "0.0.0.0", 8080
+FRONT = os.path.join(APP_DIR, "frontend")
+ALLOWED_PBX = re.compile(r'^(pjsip show|pjsip send|pjsip unregister|pjsip reload|core show|core restart|'
+                         r'dialplan|module show|module reload|sip show|sip reload|iax2 show|reload)\b', re.I)
 
-def jr(h,d,c=200):
-    b=json.dumps(d,ensure_ascii=False).encode()
-    h.send_response(c); h.send_header("Content-Type","application/json; charset=utf-8")
-    h.send_header("Access-Control-Allow-Origin","*")
-    h.send_header("Content-Length",str(len(b))); h.end_headers(); h.wfile.write(b)
+def jok(handler, data, code=200):
+    body = json.dumps(data).encode("utf-8")
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
-def read_body(h):
-    ln=int(h.headers.get("Content-Length",0)); return json.loads(h.rfile.read(ln) or b"{}")
+def jtext(handler, text, code=200, ct="text/plain; charset=utf-8"):
+    body = text.encode("utf-8")
+    handler.send_response(code)
+    handler.send_header("Content-Type", ct)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
-def run_cmd(args, timeout=15):
+def serve_file(handler, path, ct):
+    if not os.path.exists(path):
+        jtext(handler, "no encontrado", 404); return
+    with open(path, "rb") as f: data = f.read()
+    handler.send_response(200)
+    handler.send_header("Content-Type", ct)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+def need_auth(handler):
+    tok = handler.headers.get("Authorization", "").replace("Bearer ", "")
+    return db.verificar_token(tok)
+
+def parse_rows_from_upload(filename, raw):
+    rows = []
+    if filename.lower().endswith(".csv"):
+        text = raw.decode("utf-8", errors="replace")
+        sniffer = csv.Sniffer()
+        try: delim = sniffer.sniff(text).delimiter
+        except Exception: delim = ","
+        for r in csv.DictReader(io.StringIO(text), delimiter=delim):
+            rows.append({k.strip(): v for k, v in r.items() if k})
+    else:
+        try:
+            import openpyxl
+        except ImportError:
+            return None, "openpyxl no instalado"
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True)
+        ws = wb.active
+        keys = [str(c.value).strip() if c.value else "" for c in next(ws.iter_rows())]
+        for row in ws.iter_rows(min_row=2):
+            vals = [str(c.value).strip() if c.value is not None else "" for c in row]
+            rows.append(dict(zip(keys, vals)))
+    return rows, None
+
+def pbx_run(cmd):
+    if not ALLOWED_PBX.match(cmd):
+        return {"error": "comando no permitido"}
     try:
-        r=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
-        return (r.stdout or "")+(r.stderr or "")
+        out = subprocess.run(["asterisk", "-rx", cmd], capture_output=True, text=True, timeout=15)
+        return {"salida": (out.stdout or out.stderr or "")[:8000]}
     except Exception as e:
-        return f"Error: {e}"
+        return {"error": str(e)}
 
-def ast_run(cmd): return run_cmd(["asterisk","-rx",cmd])
-
-def estado_registros_api():
-    exts=listar_extensiones()
-    activos=[e["numero"] for e in exts if e["activo"]]
-    out={n:"No registrado" for n in activos}
+def ext_status():
+    out = {}
     try:
-        r=subprocess.run(["asterisk","-rx","pjsip show registrations"],capture_output=True,text=True,timeout=10)
-        text=r.stdout or ""
-        if "No registrations" in text or not text.strip(): return out
-        lines=text.splitlines()
-        for i,line in enumerate(lines):
-            for n in activos:
-                if f"reg-{n}" in line:
-                    ctx=" ".join(lines[i:i+6])
-                    if "Registered" in ctx: out[n]="Registered"
-                    elif "Rejected" in ctx: out[n]="Rechazado"
-                    elif "Failed" in ctx: out[n]="Fallido"
-                    elif "Request Sent" in ctx or "Unsent" in ctx: out[n]="Enviando"
-                    elif "Stopped" in ctx: out[n]="Detenido"
-                    break
-    except Exception: pass
+        r = subprocess.run(["asterisk", "-rx", "pjsip show registrations"], capture_output=True, text=True, timeout=10)
+        for line in (r.stdout or "").splitlines():
+            m = re.match(r'\s*(\w+)/(.*?)\s+(\w+)\s+(\S+)', line)
+            if m and m.group(3) in ("Registered", "Rejected", "Unregistered", "Trying", "Auth", "Sent"):
+                out[m.group(1)] = m.group(3)
+    except Exception:
+        pass
     return out
 
-SAFE_CMDS={"status":"core show status","peers":"pjsip show endpoints","channels":"core show channels",
-    "uptime":"core show uptime","dialplan":"dialplan show from-hospital","registrations":"pjsip show registrations",
-    "aors":"pjsip show aors","contacts":"pjsip show contacts","transports":"pjsip show transports",
-    "modules":"module show","pjsip_settings":"pjsip show settings"}
-
-def diagnostico_sip():
-    cfg=all_config()
-    ip=(cfg.get("hospital_pbx_ip") or "").strip()
-    port=(cfg.get("hospital_pbx_port") or "5060").strip()
-    result={"ip":ip,"puerto":port,"pasos":[]}
-    if not ip or ip=="IP_HOSPITAL":
-        result["error"]="No hay IP del hospital configurada"; return result
-    p=run_cmd(["ping","-c","3","-W","2",ip],timeout=10)
-    result["pasos"].append({"paso":"Ping a FreePBX","ok":"0% packet loss" in p,"salida":p[-400:]})
+def diagnose():
+    ip = db.get_config("hospital_pbx_ip", "")
+    puerto = db.get_config("hospital_pbx_port", "5060")
+    pasos = []
+    # 1 ping
+    pr = subprocess.run(["ping", "-c", "2", "-W", "2", ip], capture_output=True, text=True, timeout=10) if ip else None
+    pasos.append({"paso": "Ping a central %s" % ip, "ok": bool(pr and pr.returncode == 0),
+                  "salida": (pr.stdout or pr.stderr or "sin IP")[-400:]})
+    # 2 sip port
+    sr = subprocess.run(["bash", "-c", "timeout 3 bash -c 'echo > /dev/tcp/%s/%s' 2>&1" % (ip, puerto)],
+                        capture_output=True, text=True) if ip else None
+    pasos.append({"paso": "Puerto SIP %s:%s" % (ip, puerto), "ok": bool(sr and sr.returncode == 0),
+                  "salida": "OK" if sr and sr.returncode == 0 else "cerrado/inaccesible"})
+    # 3 pjsip conf
+    conf = ""
     try:
-        with open("/etc/asterisk/pjsip_zetronpoc.conf") as f: result["pjsip_conf"]=f.read()[-3000:]
-    except Exception as e: result["pjsip_conf"]=f"Error: {e}"
-    result["registros"]=ast_run("pjsip show registrations")
-    result["transportes"]=ast_run("pjsip show transports")
-    result["dialplan"]=ast_run("dialplan show from-hospital")
-    log=run_cmd(["bash","-c","grep -i 'pjsip\\|from-hospital\\|agi' /var/log/asterisk/messages 2>/dev/null | tail -40"],timeout=5)
-    result["log"]=log[-2000:] if log else "(sin log)"
-    return result
+        with open("/etc/asterisk/pjsip_zetronpoc.conf") as f: conf = f.read()[:4000]
+    except Exception as e:
+        conf = "No existe: %s" % e
+    reg = pbx_run("pjsip show registrations")["salida"]
+    return {"ip": ip, "puerto": puerto, "pasos": pasos,
+            "pjsip_conf": conf, "registros": reg,
+            "transportes": pbx_run("pjsip show transports")["salida"],
+            "log_pjsip": ""}
 
-class H(BaseHTTPRequestHandler):
-    def _auth(self):
-        a=self.headers.get("Authorization","")
-        return verificar_token(a[7:].strip()) if a.startswith("Bearer ") else False
-    def _guard(self):
-        if not self._auth(): jr(self,{"error":"no autorizado"},401); return False
-        return True
-    def _audit(self, accion, entidad, eid, detalle):
-        try:
-            a=self.headers.get("Authorization","")
-            tok=a[7:].strip() if a.startswith("Bearer ") else ""
-            usuario="admin" if tok else "anonimo"
-            ip=self.client_address[0] if self.client_address else ""
-            registrar_auditoria(usuario,accion,entidad,eid,detalle,ip)
-        except Exception: pass
-    def serve_file(self, fn, ctype):
-        f=os.path.join(FRONT, fn)
-        if os.path.exists(f):
-            self.send_response(200); self.send_header("Content-Type",ctype); self.end_headers()
-            with open(f,"rb") as fh: self.wfile.write(fh.read())
-            return True
-        self.send_response(404); self.end_headers(); return False
-    def do_OPTIONS(self):
-        self.send_response(204); self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Methods","GET,POST,PUT,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers","Content-Type,Authorization"); self.end_headers()
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def _body(self):
+        n = int(self.headers.get("Content-Length", 0))
+        return self.rfile.read(n) if n else b""
+
+    def _json(self):
+        try: return json.loads(self._body() or "{}")
+        except Exception: return {}
+
     def do_GET(self):
-        u=urlparse(self.path); p=u.path; q=parse_qs(u.query)
-        if p in ("/","/index.html"): return self.serve_file("index.html","text/html; charset=utf-8")
-        if p in ("/admin","/admin.html"): return self.serve_file("admin.html","text/html; charset=utf-8")
-        if p=="/api/health": return jr(self,{"status":"ok"})
-        if p=="/api/version": return jr(self,{"version":all_config().get("version","1.0")})
-        if p=="/api/theme":
-            c=all_config()
-            return jr(self,{k:c.get(k,"") for k in ("theme_acc","theme_acc2","theme_bg","theme_panel")})
-        if p=="/api/pagers":
-            qq=q.get("q",[""])[0]; return jr(self, buscar_pagers(qq) if qq else listar_pagers())
-        if p=="/api/grupos":
-            qq=q.get("q",[""])[0]; return jr(self, buscar_grupos(qq) if qq else listar_grupos())
-        if p=="/api/historial":
-            limit=min(int(q.get("limit",["50"])[0] or 50),500); offset=int(q.get("offset",["0"])[0] or 0)
-            return jr(self, historial(q, limit, offset))
-        if p=="/api/config":
-            if not self._guard(): return
-            return jr(self, all_config())
-        if p=="/api/extensions":
-            if not self._guard(): return
-            return jr(self, listar_extensiones())
-        if p=="/api/extensions/status":
-            if not self._guard(): return
-            return jr(self, estado_registros_api())
-        if p=="/api/pbx":
-            sub=q.get("cmd",["status"])[0]; acmd=SAFE_CMDS.get(sub)
-            if not acmd: return jr(self,{"error":"comando no permitido"},400)
-            return jr(self,{"cmd":sub,"salida":ast_run(acmd)})
-        if p=="/api/pbx/diagnose":
-            if not self._guard(): return
-            return jr(self, diagnostico_sip())
-        if p=="/api/cola":
-            if not self._guard(): return
-            est=q.get("estado",[""])[0] if q.get("estado") else None
-            return jr(self, listar_cola(est))
-        if p=="/api/cola/estado":
-            if not self._guard(): return
-            return jr(self, estado_cola())
-        if p=="/api/db/backup":
-            if not self._guard(): return
-            try:
-                bf=backup_db()
-                with open(bf,"rb") as f: data=f.read()
-                self.send_response(200)
-                self.send_header("Content-Type","application/octet-stream")
-                self.send_header("Content-Disposition",f'attachment; filename="{os.path.basename(bf)}"')
-                self.send_header("Content-Length",str(len(data))); self.end_headers()
-                self.wfile.write(data)
-            except Exception as e: return jr(self,{"error":str(e)},500)
-            return
-        if p=="/api/auditoria":
-            if not self._guard(): return
-            limit=min(int(q.get("limit",["200"])[0] or 200),1000)
-            return jr(self, listar_auditoria(limit))
-        if p=="/api/stats":
-            if not self._guard(): return
-            return jr(self, estadisticas())
-        if p=="/api/logs":
-            if not self._guard(): return
-            tipo=q.get("tipo",["api"])[0]; limit=min(int(q.get("limit",["200"])[0] or 200),1000)
-            return jr(self, leer_logs(tipo,limit))
-        self.send_response(404); self.end_headers()
-    def do_POST(self):
-        p=self.path
-        try:
-            if p=="/api/login":
-                data=read_body(self); tok=login_validar(data.get("user",""),data.get("pass",""))
-                return jr(self,{"token":tok}) if tok else jr(self,{"error":"usuario o clave incorrectos"},401)
-            if p=="/api/logout":
-                a=self.headers.get("Authorization","")
-                if a.startswith("Bearer "): cerrar_sesion(a[7:].strip())
-                return jr(self,{"ok":True})
-            if p=="/api/enviar":
-                data=read_body(self)
-                return jr(self, enviar_mensaje(data.get("codigo",""),data.get("mensaje",""),data.get("origen","web")))
-            if p=="/api/pagers":
-                if not self._guard(): return
-                d=read_body(self); pid=crear_pager(d); self._audit("crear","pager",pid,f"codigo={d.get('codigo')}"); return jr(self,{"id":pid})
-            if p=="/api/grupos":
-                if not self._guard(): return
-                d=read_body(self); gid=crear_grupo(d); self._audit("crear","grupo",gid,f"codigo={d.get('codigo')}"); return jr(self,{"id":gid})
-            if p=="/api/extensions":
-                if not self._guard(): return
-                d=read_body(self); eid=crear_extension(d); self._audit("crear","extension",eid,f"numero={d.get('numero')}"); return jr(self,{"id":eid})
-            if p=="/api/extensions/aplicar":
-                if not self._guard(): return
-                ok,msg=generar_pjsip_conf()
-                if not ok: return jr(self,{"error":msg},400)
-                return jr(self,{"salida":msg+"\n"+ast_run("pjsip reload")+"\n"+ast_run("pjsip send register")+"\n"+ast_run("dialplan reload")})
-            if p=="/api/pbx/reload":
-                if not self._guard(): return
-                return jr(self,{"salida":ast_run("dialplan reload")+"\n"+ast_run("pjsip reload")})
-            if p=="/api/pbx/restart":
-                if not self._guard(): return
-                return jr(self,{"salida":ast_run("core restart now")})
-            if p=="/api/pbx/force-register":
-                if not self._guard(): return
-                return jr(self,{"salida":ast_run("pjsip send register")})
-            if p=="/api/pbx/unregister":
-                if not self._guard(): return
-                return jr(self,{"salida":ast_run("pjsip unregister")})
-            if p=="/api/pbx/run":
-                if not self._guard(): return
-                d=read_body(self); cmd=(d.get("cmd","") or "").strip()
-                if not cmd: return jr(self,{"error":"comando vacio"},400)
-                allowed=("pjsip show","pjsip send","pjsip unregister","pjsip reload","core show","core restart","dialplan show","dialplan reload","module show","module load","module unload")
-                if not any(cmd.lower().startswith(a) for a in allowed):
-                    return jr(self,{"error":"comando no permitido"},400)
-                return jr(self,{"salida":ast_run(cmd)})
-            if p=="/api/cola/reintentar":
-                if not self._guard(): return
-                d=read_body(self); reintentar_cola(int(d["id"])); return jr(self,{"ok":True})
-            if p=="/api/cola/limpiar":
-                if not self._guard(): return
-                limpiar_cola(); return jr(self,{"ok":True})
-            if p=="/api/db/restore":
-                if not self._guard(): return
-                ln=int(self.headers.get("Content-Length",0)); body=self.rfile.read(ln)
-                try:
-                    bk=restore_db(body); return jr(self,{"ok":True,"backup":bk})
-                except Exception as e: return jr(self,{"error":str(e)},500)
-            self.send_response(404); self.end_headers()
-        except Exception as e: return jr(self,{"error":str(e)},400)
-    def do_PUT(self):
-        parts=self.path.split("/"); data=read_body(self)
-        try:
-            if parts[1]=="api" and parts[2]=="pagers" and len(parts)>3:
-                if not self._guard(): return
-                if len(parts)>4 and parts[4]=="estado":
-                    toggle_pager(int(parts[3]),data.get("activo",1)); return jr(self,{"ok":True})
-                actualizar_pager(int(parts[3]),data); return jr(self,{"ok":True})
-            if parts[1]=="api" and parts[2]=="grupos" and len(parts)>3:
-                if not self._guard(): return
-                actualizar_grupo(int(parts[3]),data); return jr(self,{"ok":True})
-            if parts[1]=="api" and parts[2]=="extensiones" and len(parts)>3:
-                if not self._guard(): return
-                actualizar_extension(int(parts[3]),data); self._audit("editar","extension",parts[3],f"numero={data.get('numero')}"); return jr(self,{"ok":True})
-            if parts[1]=="api" and parts[2]=="config":
-                if not self._guard(): return
-                for k,v in data.items(): set_config(k,str(v))
-                self._audit("editar","config","-",f"claves={list(data.keys())}"); return jr(self,{"ok":True})
-            self.send_response(404); self.end_headers()
-        except Exception as e: return jr(self,{"error":str(e)},400)
-    def do_DELETE(self):
-        parts=self.path.split("/")
-        try:
-            if parts[1]=="api" and parts[2]=="pagers" and len(parts)>3:
-                if not self._guard(): return
-                borrar_pager(int(parts[3])); return jr(self,{"ok":True})
-            if parts[1]=="api" and parts[2]=="grupos" and len(parts)>3:
-                if not self._guard(): return
-                borrar_grupo(int(parts[3])); return jr(self,{"ok":True})
-            if parts[1]=="api" and parts[2]=="extensiones" and len(parts)>3:
-                if not self._guard(): return
-                borrar_extension(int(parts[3])); self._audit("eliminar","extension",parts[3],""); return jr(self,{"ok":True})
-            self.send_response(404); self.end_headers()
-        except Exception as e: return jr(self,{"error":str(e)},400)
-    def log_message(self,*a): pass
+        u = urllib.parse.urlparse(self.path); p = u.path; q = urllib.parse.parse_qs(u.query)
+        # estaticos
+        if p == "/" or p == "/index.html": return serve_file(self, os.path.join(FRONT, "index.html"), "text/html; charset=utf-8")
+        if p == "/admin" or p == "/admin.html": return serve_file(self, os.path.join(FRONT, "admin.html"), "text/html; charset=utf-8")
+        # publicos
+        if p == "/api/health": return jok(self, {"status": "ok", "ts": int(time.time())})
+        if p == "/api/version": return jok(self, {"version": db.get_config("version", "2.0")})
+        if p == "/api/theme": return jok(self, db.all_config())
+        if p == "/api/login": return jtext(self, "use POST", 405)
+        # auth
+        if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
 
-if __name__=="__main__":
-    print(f"API ZetronPOC en http://{HOST}:{PORT}")
-    ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+        if p == "/api/config": return jok(self, db.all_config())
+        if p == "/api/extensions": return jok(self, db.listar_extensiones())
+        if p == "/api/extensions/status": return jok(self, ext_status())
+        if p == "/api/pagers": return jok(self, db.buscar_pagers(q.get("q", [""])[0]))
+        if p == "/api/grupos": return jok(self, db.buscar_grupos(q.get("q", [""])[0]))
+        if p == "/api/plantillas": return jok(self, db.listar_plantillas())
+        if p == "/api/programados": return jok(self, db.listar_programados())
+        if p == "/api/auditoria": return jok(self, db.listar_auditoria(int(q.get("limit", ["200"])[0])))
+        if p == "/api/stats": return jok(self, db.estadisticas())
+        if p == "/api/cola": return jok(self, db.listar_cola(q.get("estado", [None])[0], int(q.get("limit", ["200"])[0])))
+        if p == "/api/cola/estado": return jok(self, db.estado_cola())
+        if p == "/api/logs": return jok(self, db.leer_logs(q.get("tipo", ["api"])[0], int(q.get("limit", ["300"])[0])))
+        if p == "/api/historial":
+            f = {k: q[k][0] for k in q if k not in ("limit", "offset")}
+            return jok(self, db.historial(f, int(q.get("limit", ["50"])[0]), int(q.get("offset", ["0"])[0])))
+        if p == "/api/historial/export":
+            f = {k: q[k][0] for k in q}
+            res = db.historial(f, 10000, 0)["rows"]
+            out = io.StringIO()
+            w = csv.writer(out); w.writerow(["fecha_hora","interno","codigo","cap_code","mensaje","baudios","estado","obs"])
+            for r in res: w.writerow([r.get("fecha_hora"), r.get("interno_origen"), r.get("codigo"), r.get("cap_code"), r.get("mensaje"), r.get("baudios"), r.get("estado"), r.get("observaciones")])
+            return jtext(self, out.getvalue(), 200, "text/csv; charset=utf-8")
+        if p == "/api/db/backup":
+            bf = db.backup_db()
+            with open(bf, "rb") as f: data = f.read()
+            self.send_response(200); self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % os.path.basename(bf))
+            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+        if p == "/api/pbx": return jok(self, pbx_run(q.get("cmd", [""])[0]))
+        if p == "/api/pbx/diagnose": return jok(self, diagnose())
+        return jtext(self, "no encontrado", 404)
+
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path); p = u.path
+        if p == "/api/login":
+            d = self._json()
+            tok = db.login_validar(d.get("user", ""), d.get("pass", ""))
+            if tok: return jok(self, {"token": tok})
+            return jok(self, {"error": "credenciales invalidas"}, 401)
+        if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
+        d = self._json()
+        if p == "/api/enviar": return jok(self, db.enviar_mensaje(d.get("codigo"), d.get("mensaje"), d.get("origen", "web")))
+        if p == "/api/extensions":
+            return jok(self, {"id": db.crear_extension(d)})
+        if p == "/api/extensions/aplicar":
+            ok, msg = db.generar_pjsip_conf()
+            if ok:
+                subprocess.run(["asterisk", "-rx", "pjsip reload"], capture_output=True, timeout=10)
+                subprocess.run(["asterisk", "-rx", "pjsip send register"], capture_output=True, timeout=10)
+            return jok(self, {"ok": ok, "salida": msg})
+        if p == "/api/pagers":
+            return jok(self, {"id": db.crear_pager(d)})
+        if p == "/api/pagers/import":
+            fn = urllib.parse.unquote(self.headers.get("X-Filename", "import.csv"))
+            rows, err = parse_rows_from_upload(fn, self._body())
+            if err: return jok(self, {"error": err})
+            return jok(self, db.importar_pagers(rows))
+        if p == "/api/grupos":
+            return jok(self, {"id": db.crear_grupo(d)})
+        if p == "/api/grupos/import":
+            fn = urllib.parse.unquote(self.headers.get("X-Filename", "import.csv"))
+            rows, err = parse_rows_from_upload(fn, self._body())
+            if err: return jok(self, {"error": err})
+            return jok(self, db.importar_grupos(rows))
+        if p == "/api/plantillas":
+            return jok(self, {"id": db.crear_plantilla(d)})
+        if p == "/api/programados":
+            return jok(self, {"id": db.crear_programado(d)})
+        if p == "/api/cola/reintentar":
+            db.reintentar_cola(int(d.get("id", 0))); return jok(self, {"ok": True})
+        if p == "/api/cola/limpiar":
+            db.limpiar_cola(); return jok(self, {"ok": True})
+        if p == "/api/pbx/reload":
+            r1 = pbx_run("pjsip reload"); r2 = pbx_run("dialplan reload")
+            return jok(self, {"salida": r1.get("salida", "") + "\n" + r2.get("salida", "")})
+        if p == "/api/pbx/restart":
+            r = subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=20)
+            return jok(self, {"salida": r.stdout or r.stderr or "reiniciado"})
+        if p == "/api/pbx/force-register":
+            r = pbx_run("pjsip send register")
+            return jok(self, {"salida": r.get("salida", "ok")})
+        if p == "/api/pbx/unregister":
+            r = pbx_run("pjsip unregister")
+            return jok(self, {"salida": r.get("salida", "ok")})
+        if p == "/api/pbx/run":
+            return jok(self, pbx_run(d.get("cmd", "")))
+        if p == "/api/db/backup-email":
+            bf = db.backup_db()
+            r = db.enviar_email(db.get_config("backup_email"), "Backup ZetronPOC", "Backup adjunto.", bf)
+            return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
+        if p == "/api/db/restore":
+            data = self._body()
+            db.restore_db(data); return jok(self, {"ok": True})
+        if p == "/api/smtp/test":
+            email = d.get("email", db.get_config("backup_email"))
+            r = db.enviar_email(email, "ZetronPOC - test SMTP", "Prueba OK")
+            return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
+        return jtext(self, "no encontrado", 404)
+
+    def do_PUT(self):
+        if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
+        u = urllib.parse.urlparse(self.path); p = u.path; d = self._json()
+        if p == "/api/config":
+            for k, v in d.items(): db.set_config(k, str(v))
+            return jok(self, {"ok": True})
+        m = re.match(r'/api/extensions/(\d+)$', p)
+        if m: db.actualizar_extension(int(m.group(1)), d); return jok(self, {"ok": True})
+        m = re.match(r'/api/pagers/(\d+)$', p)
+        if m: db.actualizar_pager(int(m.group(1)), d); return jok(self, {"ok": True})
+        m = re.match(r'/api/pagers/(\d+)/estado$', p)
+        if m: db.toggle_pager(int(m.group(1)), int(d.get("activo", 1))); return jok(self, {"ok": True})
+        m = re.match(r'/api/grupos/(\d+)$', p)
+        if m: db.actualizar_grupo(int(m.group(1)), d); return jok(self, {"ok": True})
+        m = re.match(r'/api/plantillas/(\d+)$', p)
+        if m: db.actualizar_plantilla(int(m.group(1)), d); return jok(self, {"ok": True})
+        m = re.match(r'/api/programados/(\d+)$', p)
+        if m: db.actualizar_programado(int(m.group(1)), d); return jok(self, {"ok": True})
+        return jtext(self, "no encontrado", 404)
+
+    def do_DELETE(self):
+        if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
+        p = urllib.parse.urlparse(self.path).path
+        m = re.match(r'/api/extensions/(\d+)$', p)
+        if m: db.borrar_extension(int(m.group(1))); return jok(self, {"ok": True})
+        m = re.match(r'/api/pagers/(\d+)$', p)
+        if m: db.borrar_pager(int(m.group(1))); return jok(self, {"ok": True})
+        m = re.match(r'/api/grupos/(\d+)$', p)
+        if m: db.borrar_grupo(int(m.group(1))); return jok(self, {"ok": True})
+        m = re.match(r'/api/plantillas/(\d+)$', p)
+        if m: db.borrar_plantilla(int(m.group(1))); return jok(self, {"ok": True})
+        m = re.match(r'/api/programados/(\d+)$', p)
+        if m: db.borrar_programado(int(m.group(1))); return jok(self, {"ok": True})
+        return jtext(self, "no encontrado", 404)
+
+class Server(ThreadingMixIn, ThreadingHTTPServer):
+    daemon_threads = True
+
+if __name__ == "__main__":
+    os.makedirs(os.path.join(APP_DIR, "logs"), exist_ok=True)
+    print("ZetronPOC v2.0 API en http://%s:%d" % (HOST, PORT))
+    Server((HOST, PORT), Handler).serve_forever()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pocsag_check.py - AGI que valida un codigo de pager en la BD.
+"""pocsag_check.py - AGI que valida un codigo de pager/grupo en la BD.
 Setea POCSAG_VALID=1/0 y POCSAG_MSJ_TIMEOUT (seg) para el dialplan."""
 import sys, os
 APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(APP_DIR, "database"))
 from db_manager import get_config, resolver_destino
 
 def agi_set(v, val):
-    sys.stdout.write(f'SET VARIABLE {v} "{val}"\n'); sys.stdout.flush()
+    sys.stdout.write('SET VARIABLE %s "%s"\n' % (v, val)); sys.stdout.flush()
 
 def main():
     if len(sys.argv) < 2:
@@ -17,13 +17,13 @@ def main():
     dest = resolver_destino(codigo)
     if dest:
         agi_set("POCSAG_VALID", "1")
-        to = get_config("mensaje_timeout", "10")
-        agi_set("POCSAG_MSJ_TIMEOUT", str(to))
+        agi_set("POCSAG_MSJ_TIMEOUT", str(get_config("mensaje_timeout", "10")))
     else:
         agi_set("POCSAG_VALID", "0")
 
 if __name__ == "__main__":
-    try: main()
+    try:
+        main()
     except Exception:
         try: agi_set("POCSAG_VALID", "0")
-        except: pass
+        except Exception: pass
