@@ -2,7 +2,7 @@
 
 Sistema de paginación hospitalaria POCSAG (variante CLIENTE) - STANDALONE.
 
-## Arquitectura (v1.0client standalone)
+## Arquitectura (v1.01)
 
 - **Totalmente self-contained**: no depende de `instalador.sh` ni de `pjsip_pocsag.conf`.
 - **Todo en la base de datos**: IP del hospital, transporte, codecs, claves, etc.
@@ -26,16 +26,16 @@ Regenera `pjsip_hospital.conf` desde la base de datos automaticamente.
 
 ## Como funciona
 
-1. Los internos 3000-3003 se registran contra la central VoIP del hospital (PJSIP registration).
-2. Desde cualquier telefono de la central, al marcar 3000/3001/3002/3003 o 177, la central enruta la llamada al Asterisk.
+1. Los internos 2000-2010 se registran contra la central VoIP del hospital (FreePBX, PJSIP registration).
+2. Desde cualquier telefono de la central, al marcar 2000-2010 o 177, la central enruta la llamada al Asterisk.
 3. El Asterisk contesta con el IVR: codigo -> mensaje -> envio POCSAG.
 
 ## Configuracion post-install (todo desde el panel admin)
 
 `http://servidor:8080/admin` (admin / admin123):
 
-1. **Parametros** -> IP central del hospital -> cargar la IP real -> Guardar
-2. **Extensiones** -> editar cada interno (3000-3003) con su clave real
+1. **Parametros** -> IP central del hospital (default 192.168.2.97) -> Guardar
+2. **Extensiones** -> editar cada interno (2000-2010) con su clave real
 3. **Extensiones** -> Aplicar a Asterisk (regenera `pjsip_hospital.conf`)
 4. La columna "Registro" muestra Registered / No registrado en vivo (auto-refresh 5s)
 
@@ -43,7 +43,7 @@ Regenera `pjsip_hospital.conf` desde la base de datos automaticamente.
 
 | Clave BD | Descripcion | Default |
 |----------|-------------|---------|
-| `hospital_pbx_ip` | IP de la central del hospital | (vacio) |
+| `hospital_pbx_ip` | IP de la central del hospital (FreePBX) | `192.168.2.97` |
 | `transport_bind` | Bind del transporte UDP | `0.0.0.0:5060` |
 | `transport_protocol` | Protocolo transporte | `udp` |
 | `codecs` | Codecs permitidos | `ulaw,alaw` |
@@ -67,7 +67,7 @@ cat /etc/asterisk/pjsip_hospital.conf
 | `backend/app.py` | API REST + panel web |
 | `database/db_manager.py` | BD + `generar_pjsip_hospital_conf()` |
 | `database/schema.sql` | Esquema BD (todas las tablas) |
-| `database/seed.sql` | Datos iniciales (3000-3003, pagers, config) |
+| `database/seed.sql` | Datos iniciales (2000-2010, pagers, config) |
 | `frontend/admin.html` | Panel admin con gestion completa |
 | `frontend/index.html` | Pagina publica de envio |
 | `asterisk/pjsip_hospital.conf` | Template inicial (se regenera desde BD) |
@@ -77,4 +77,4 @@ cat /etc/asterisk/pjsip_hospital.conf
 
 ## Version
 
-1.0client (standalone)
+1.01 (standalone, FreePBX 192.168.2.97, internos 2000-2010)

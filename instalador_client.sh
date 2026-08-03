@@ -19,7 +19,7 @@ SRC="${REPO}/src/pocsag-server-client"
 AST_ETC="/etc/asterisk"
 APP_DIR="/opt/pocsag-server"
 DB="${APP_DIR}/database/pocsag.db"
-VERSION="1.02client"
+VERSION="1.01"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
 
@@ -151,13 +151,13 @@ if row and row[0] == 'IP_HOSPITAL':
     c.execute("UPDATE config SET valor='' WHERE clave='hospital_pbx_ip'")
     print("[FIX]  hospital_pbx_ip era 'IP_HOSPITAL' (placeholder). Limpiado.")
 # Asegurar config por defecto (INSERT OR IGNORE no pisa valores existentes)
-for k,v in [('hospital_pbx_ip',''),('hospital_pbx_port','5060'),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
+for k,v in [('hospital_pbx_ip','192.168.2.97'),('hospital_pbx_port','5060'),('transport_bind','0.0.0.0:5060'),('transport_protocol','udp'),
             ('codecs','ulaw,alaw'),('retry_interval','60'),('expiration','3600'),
             ('warmup_512_ms','750'),('warmup_1200_ms','1500'),('warmup_2400_ms','1500'),('preamble_bits','300')]:
     c.execute("INSERT OR IGNORE INTO config(clave,valor) VALUES(?,?)", (k,v))
 c.execute("INSERT OR REPLACE INTO config(clave,valor) VALUES('version','${VERSION}')")
-# Asegurar que existen los internos 3000-3003 (no pisar claves existentes)
-for n in ('3000','3001','3002','3003'):
+# Asegurar que existen los internos 2000-2010 (no pisar claves existentes)
+for n in ('2000','2001','2002','2003','2004','2005','2006','2007','2008','2009','2010'):
     c.execute("INSERT OR IGNORE INTO extensiones (numero,password,contexto,descripcion,activo) VALUES (?,?,?,?,1)",
               (n, 'CAMBIAR_PASSWORD_' + n, 'pocsag-incoming', 'Interno hospital ' + n))
 c.commit(); c.close()
@@ -246,8 +246,8 @@ echo "  Panel publico: http://localhost:8080/"
 echo "  Panel admin  : http://localhost:8080/admin  (admin / admin123)"
 echo ""
 echo "  PROXIMO PASO (todo desde el panel admin):"
-echo "    1) Parametros -> IP central del hospital -> cargar la IP real -> Guardar"
-echo "    2) Extensiones -> editar cada interno (3000-3003) con su clave real"
+echo "    1) Parametros -> IP central del hospital (default 192.168.2.97) -> Guardar"
+echo "    2) Extensiones -> editar cada interno (2000-2010) con su clave real"
 echo "    3) Extensiones -> Aplicar a Asterisk  (regenera pjsip_hospital.conf)"
 echo "    4) La columna 'Registro' muestra Registered / No registrado en vivo"
 echo ""
