@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>ZetronPOC</title>
+<style>
+:root{--acc:#0ea5e9;--acc2:#6366f1;--mut:#64748b;--line:rgba(15,23,42,.1)}
+*{box-sizing:border-box;font-family:'Inter',ui-sans-serif,system-ui,sans-serif}
+body{margin:0;background:radial-gradient(900px 600px at 8% -10%,rgba(14,165,233,.12),transparent 60%),#f4f7fb;color:#0f172a;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}
+.brand{display:flex;align-items:center;gap:.6rem;font-weight:700;margin-bottom:1.5rem}
+.brand .logo{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(135deg,var(--acc),var(--acc2));font-size:22px;box-shadow:0 8px 22px -6px rgba(99,102,241,.5)}
+.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:2rem;width:100%;max-width:560px;box-shadow:0 12px 30px -14px rgba(15,23,42,.12)}
+h2{font-family:'Space Grotesk',sans-serif;margin:0 0 1rem}
+label{display:block;font-size:.72rem;color:var(--mut);margin-bottom:.3rem;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+input,textarea{width:100%;background:#fff;border:1px solid rgba(15,23,42,.12);border-radius:11px;padding:.55rem .7rem;font-size:.9rem;outline:none;margin-bottom:.8rem}
+input:focus,textarea:focus{border-color:var(--acc);box-shadow:0 0 0 4px rgba(14,165,233,.15)}
+.combo{position:relative}
+ul{position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:#fff;border:1px solid var(--line);border-radius:11px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none}
+li{padding:.5rem .6rem;border-radius:8px;cursor:pointer}li:hover{background:rgba(14,165,233,.08)}
+.btn{cursor:pointer;border:none;border-radius:11px;padding:.6rem 1rem;font-weight:700;font-size:.9rem;background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 8px 20px -6px rgba(99,102,241,.45)}
+.toast{margin-top:.8rem;padding:.7rem .9rem;border-radius:11px;font-size:.86rem;display:none}.toast.show{display:block}.toast.ok{background:rgba(16,163,74,.12);border:1px solid rgba(16,163,74,.3);color:#15803d}.toast.err{background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.3);color:#b91c1c}
+a{color:var(--acc);text-decoration:none;margin-top:1rem;display:inline-block}
+</style></head>
+<body>
+<div class="brand"><div class="logo">📟</div><div>ZetronPOC</div></div>
+<div class="card">
+  <h2>📨 Enviar mensaje</h2>
+  <label>Buscar destinatario (nombre, codigo o area)</label>
+  <div class="combo"><input id="q" autocomplete="off" placeholder="Escriba para buscar..."><ul id="list"></ul></div>
+  <label>Mensaje (alfanumerico)</label><textarea id="msg" rows="3" placeholder="Mensaje para el pager..."></textarea>
+  <button class="btn" onclick="send()">Enviar mensaje</button>
+  <div id="res" class="toast"></div>
+  <a href="/admin">Panel de administracion</a>
+</div>
+<script>
+let chosen=null,timer=null;
+const q=document.getElementById('q'),list=document.getElementById('list');
+q.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(async()=>{const r=await buscar(q.value.trim());render(r);},180);});
+async function buscar(x){const [pe,gr]=await Promise.all([fetch('/api/pagers'+(x?('?q='+encodeURIComponent(x)):'')).then(r=>r.json()),fetch('/api/grupos'+(x?('?q='+encodeURIComponent(x)):'')).then(r=>r.json())]);const out=[];(pe||[]).filter(p=>p.activo).forEach(p=>out.push({codigo:p.codigo,label:`${p.nombre||''} ${p.apellido||''}`.trim()||p.codigo,tipo:'pager'}));(gr||[]).filter(g=>g.activo).forEach(g=>out.push({codigo:g.codigo,label:g.nombre||g.codigo,tipo:'grupo'}));return out;}
+function render(r){list.innerHTML=r.map(x=>`<li onclick="pick('${x.codigo}','${(x.label||'').replace(/'/g,'')}')">${x.label} <span style="color:var(--mut);font-size:.8rem">${x.codigo}</span> <span style="font-size:.7rem;color:var(--acc);font-weight:700">${x.tipo}</span></li>`).join('');list.style.display=r.length?'block':'none';}
+function pick(c,l){chosen=c;q.value=l+' ('+c+')';list.style.display='none';}
+document.addEventListener('click',e=>{if(!q.contains(e.target))list.style.display='none';});
+async function send(){const t=document.getElementById('res');if(!chosen){t.className='toast show err';t.textContent='Seleccione un destinatario.';return;}const m=document.getElementById('msg').value.trim();if(!m){t.className='toast show err';t.textContent='Escriba un mensaje.';return;}const r=await fetch('/api/enviar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigo:chosen,mensaje:m,origen:'web'})}).then(r=>r.json());t.className='toast show '+(r.status==='encolado'||r.status==='enviado'?'ok':'err');t.textContent=r.status==='encolado'?'Mensaje encolado.':r.status==='enviado'?'Mensaje enviado.':'Error: '+(r.detalle||'');if(r.status==='encolado'||r.status==='enviado'){document.getElementById('msg').value='';q.value='';chosen=null;}}
+</script>
+</body></html>

@@ -1,0 +1,15 @@
+[Unit]
+Description=ZetronPOC API (panel web)
+After=network.target
+
+[Service]
+Type=simple
+Environment=ZETRONPOC_DIR=/opt/zetronpoc
+WorkingDirectory=/opt/zetronpoc
+ExecStart=/usr/bin/python3 /opt/zetronpoc/backend/app.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

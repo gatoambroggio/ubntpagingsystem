@@ -24,20 +24,20 @@ import {
 import JSZip from "jszip";
 
 const REPO = "https://github.com/gatoambroggio/ubntpagingsystem.git";
-const RAW = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh";
-const RAW_RPI = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_rpi.sh";
+const RAW = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh";
+const RAW_RPI = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh";
 
 const BOOTSTRAP = `#!/usr/bin/env bash
-# Instala Pogsac (paginacion hospitalaria, modo cliente FreePBX) desde GitHub.
+# Instala ZetronPOC (paginacion hospitalaria POCSAG, cliente FreePBX) desde GitHub.
 set -euo pipefail
 TMP="$(mktemp -d)"
 echo "==> Clonando repositorio desde GitHub..."
 git clone --depth 1 ${REPO} "$TMP"
 cd "$TMP"
-echo "==> Ejecutando instalador cliente (podes pasar --update)..."
-sudo bash instalador_client.sh "$@"
+echo "==> Ejecutando instalador (podes pasar --update)..."
+sudo bash src/zetronpoc/instalador.sh "$@"
 echo ""
-echo "[OK] Pogsac instalado."
+echo "[OK] ZetronPOC instalado."
 echo "     Panel publico: http://localhost:8080/"
 echo "     Panel admin  : http://localhost:8080/admin"
 `;
@@ -47,8 +47,8 @@ const INCLUDES = [
   { icon: Cpu, label: "Encoder POCSAG configurable" },
   { icon: Server, label: "Asterisk + PJSIP cliente" },
   { icon: Database, label: "SQLite + bitacora" },
-  { icon: Boxes, label: "Panel admin completo" },
-  { icon: ShieldCheck, label: "IVR igual al 2184" },
+  { icon: Boxes, label: "Panel tipo FreePBX" },
+  { icon: ShieldCheck, label: "IVR que contesta (*99)" },
 ];
 
 const fade = {
@@ -78,12 +78,12 @@ export default function Descarga() {
     setBusy(true);
     try {
       const zip = new JSZip();
-      const r1 = await fetch("/instalador_client.sh");
-      if (!r1.ok) throw new Error("No se pudo obtener instalador_client.sh (HTTP " + r1.status + ").");
+      const r1 = await fetch(RAW);
+      if (!r1.ok) throw new Error("No se pudo obtener instalador.sh (HTTP " + r1.status + ").");
       const instalador = await r1.text();
       if (instalador.length < 1000 || instalador.trimStart().startsWith("<"))
-        throw new Error("instalador_client.sh vino vacio o como HTML.");
-      zip.file("instalador_client.sh", instalador);
+        throw new Error("instalador.sh vino vacio o como HTML.");
+      zip.file("instalador.sh", instalador);
       try {
         const r2 = await fetch("/source-manifest.json");
         const txt = await r2.text();
@@ -101,12 +101,12 @@ export default function Descarga() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "pogsac-client.zip";
+      a.download = "zetronpoc.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setOk("Descarga lista: pogsac-client.zip con instalador_client.sh + carpeta src/ completa.");
+      setOk("Descarga lista: zetronpoc.zip con instalador.sh + carpeta src/ completa.");
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -163,7 +163,7 @@ export default function Descarga() {
             <RadioTower className="w-5 h-5 text-white" />
           </div>
           <div className="leading-tight">
-            <div className="font-display font-bold text-slate-900">Pogsac</div>
+            <div className="font-display font-bold text-slate-900">ZetronPOC</div>
             <div className="text-[11px] text-slate-500 -mt-0.5">Paginacion hospitalaria v1.0</div>
           </div>
         </div>
@@ -201,7 +201,7 @@ export default function Descarga() {
           Paginacion hospitalaria
           <br />
           <span className="bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 bg-clip-text text-transparent">
-            Pogsac sobre VoIP, lista para usar
+            ZetronPOC sobre VoIP, lista para usar
           </span>
         </motion.h1>
 
@@ -211,9 +211,9 @@ export default function Descarga() {
           transition={{ duration: 0.55, delay: 0.12 }}
           className="mt-5 text-slate-600 text-base sm:text-lg max-w-xl mx-auto leading-relaxed"
         >
-          Instala en Ubuntu Server 22.04 con una sola linea. Pogsac registra 10 internos contra la central
-          FreePBX del hospital, reproduce el IVR del 2184 y entrega un panel admin para gestionar extensiones,
-          encoder y envios. Configurable al 100% desde la web.
+          Instala en Ubuntu Server 22.04 con una sola linea. ZetronPOC registra internos contra la central
+          FreePBX del hospital, contesta con un IVR (probar *99) y entrega un panel tipo FreePBX para
+          gestionar extensiones, pagers, encoder y envios. Configurable al 100% desde la web.
         </motion.p>
 
         <motion.div
@@ -300,8 +300,8 @@ export default function Descarga() {
               <div>
                 <h2 className="font-display font-bold text-lg text-slate-900">Descarga offline (ZIP)</h2>
                 <p className="text-sm text-slate-500 leading-relaxed">
-                  <code className="font-mono text-indigo-600">instalador_client.sh</code> + carpeta{" "}
-                  <code className="font-mono text-indigo-600">src/</code> completa (Pogsac cliente FreePBX).
+                  <code className="font-mono text-indigo-600">instalador.sh</code> + carpeta{" "}
+                  <code className="font-mono text-indigo-600">src/</code> completa (ZetronPOC cliente FreePBX).
                 </p>
               </div>
             </div>
@@ -313,7 +313,7 @@ export default function Descarga() {
               className="w-full bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 hover:brightness-105 disabled:opacity-60 text-white font-semibold py-3.5 rounded-2xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30"
             >
               {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-              {busy ? "Empaquetando..." : "Descargar pogsac-client.zip"}
+              {busy ? "Empaquetando..." : "Descargar zetronpoc.zip"}
             </motion.button>
             {ok && (
               <div className="mt-4 flex items-start gap-2 text-sm text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl px-4 py-3">
@@ -365,7 +365,7 @@ export default function Descarga() {
           </p>
           <CmdBlock
             id="b"
-            text={`git clone ${REPO} /tmp/pogsac && cd /tmp/pogsac && sudo bash instalador_client.sh`}
+            text={`git clone ${REPO} /tmp/zetronpoc && cd /tmp/zetronpoc && sudo bash src/zetronpoc/instalador.sh`}
             label="git clone"
           />
           <button
@@ -394,7 +394,7 @@ export default function Descarga() {
           </p>
           <CmdBlock
             id="up"
-            text={`sudo bash instalador_client.sh --update && sudo systemctl restart pocsag-api`}
+            text={`sudo bash src/zetronpoc/instalador.sh --update && sudo systemctl restart zetronpoc-api`}
             label="update"
           />
           <p className="text-[11px] text-slate-400 mt-2">
@@ -443,8 +443,8 @@ export default function Descarga() {
           </div>
           <div className="font-mono text-xs space-y-2 text-slate-300">
             <div><span className="text-slate-500">$</span> curl -fsSL {RAW} | sudo bash</div>
-            <div className="text-emerald-400">{"->"} Instalando Pogsac: Asterisk, encoder y servicios cliente...</div>
-            <div><span className="text-slate-500">$</span> sudo bash instalador_client.sh --update</div>
+            <div className="text-emerald-400">{"->"} Instalando ZetronPOC: Asterisk, encoder y servicios cliente...</div>
+            <div><span className="text-slate-500">$</span> sudo bash src/zetronpoc/instalador.sh --update</div>
             <div className="text-emerald-400">{"->"} Panel publico: http://localhost:8080/</div>
             <div className="text-emerald-400">{"->"} Panel admin  : http://localhost:8080/admin</div>
           </div>
@@ -453,7 +453,7 @@ export default function Descarga() {
 
       <footer className="relative z-10 max-w-5xl mx-auto px-6 mt-10 mb-10 flex items-center justify-center gap-2 text-xs text-slate-400">
         <Server className="w-3.5 h-3.5" />
-        Despliegue en Ubuntu Server 22.04 LTS &middot; Pogsac v1.0 sobre VoIP
+        Despliegue en Ubuntu Server 22.04 LTS &middot; ZetronPOC v1.0 sobre VoIP
       </footer>
     </div>
   );
