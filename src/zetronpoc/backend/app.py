@@ -5,7 +5,6 @@ http.server puro (sin Flask) para maxima portabilidad. Puerto 8080.
 """
 import os, sys, json, subprocess, io, time, csv, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from socketserver import ThreadingMixIn
 
 APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
 sys.path.insert(0, APP_DIR)
@@ -273,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
         if m: db.borrar_programado(int(m.group(1))); return jok(self, {"ok": True})
         return jtext(self, "no encontrado", 404)
 
-class Server(ThreadingMixIn, ThreadingHTTPServer):
+class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 if __name__ == "__main__":
