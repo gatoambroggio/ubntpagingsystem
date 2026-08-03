@@ -24,31 +24,31 @@ import {
 import JSZip from "jszip";
 
 const REPO = "https://github.com/gatoambroggio/ubntpagingsystem.git";
-const RAW = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador.sh";
-const RAW_RPI = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_rpi.sh";
+const RAW = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh";
+const RAW_RPI = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh";
 
 const BOOTSTRAP = `#!/usr/bin/env bash
-# Instala el sistema POCSAG clonando el repositorio desde GitHub.
+# Instala ZetronPOC (paginacion hospitalaria POCSAG, cliente FreePBX) desde GitHub.
 set -euo pipefail
 TMP="$(mktemp -d)"
 echo "==> Clonando repositorio desde GitHub..."
 git clone --depth 1 ${REPO} "$TMP"
 cd "$TMP"
-echo "==> Ejecutando instalador (podes pasar --update o --reset)..."
-sudo bash instalador.sh "$@"
+echo "==> Ejecutando instalador (podes pasar --update)..."
+sudo bash src/zetronpoc/instalador.sh "$@"
 echo ""
-echo "[OK] Sistema POCSAG instalado."
+echo "[OK] ZetronPOC instalado."
 echo "     Panel publico: http://localhost:8080/"
 echo "     Panel admin  : http://localhost:8080/admin"
 `;
 
 const INCLUDES = [
-  { icon: RadioTower, label: "Panel publico + admin" },
-  { icon: Cpu, label: "Encoder POCSAG (C/Python)" },
-  { icon: Server, label: "Backend Asterisk + PJSIP" },
+  { icon: RadioTower, label: "10 internos hacia FreePBX" },
+  { icon: Cpu, label: "Encoder Zetron 640 (BCH real)" },
+  { icon: Server, label: "Asterisk + PJSIP cliente" },
   { icon: Database, label: "SQLite + bitacora" },
-  { icon: Boxes, label: "Carpeta src/ completa" },
-  { icon: ShieldCheck, label: "Backups + log SMTP" },
+  { icon: Boxes, label: "Panel futurista + FreePBX" },
+  { icon: ShieldCheck, label: "IVR que contesta (*99)" },
 ];
 
 const fade = {
@@ -78,7 +78,7 @@ export default function Descarga() {
     setBusy(true);
     try {
       const zip = new JSZip();
-      const r1 = await fetch("/instalador.sh");
+      const r1 = await fetch(RAW);
       if (!r1.ok) throw new Error("No se pudo obtener instalador.sh (HTTP " + r1.status + ").");
       const instalador = await r1.text();
       if (instalador.length < 1000 || instalador.trimStart().startsWith("<"))
@@ -101,12 +101,12 @@ export default function Descarga() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "pocsag-completo.zip";
+      a.download = "zetronpoc.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setOk("Descarga lista: pocsag-completo.zip con instalador.sh + carpeta src/ completa.");
+      setOk("Descarga lista: zetronpoc.zip con instalador.sh + carpeta src/ completa.");
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -163,8 +163,8 @@ export default function Descarga() {
             <RadioTower className="w-5 h-5 text-white" />
           </div>
           <div className="leading-tight">
-            <div className="font-display font-bold text-slate-900">POCSAG</div>
-            <div className="text-[11px] text-slate-500 -mt-0.5">Paginacion hospitalaria</div>
+            <div className="font-display font-bold text-slate-900">ZetronPOC</div>
+            <div className="text-[11px] text-slate-500 -mt-0.5">Zetron 640 / DaptX-Xtra v2.0</div>
           </div>
         </div>
         <a
@@ -201,7 +201,7 @@ export default function Descarga() {
           Paginacion hospitalaria
           <br />
           <span className="bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 bg-clip-text text-transparent">
-            sobre VoIP, lista para usar
+            Zetron 640 · DaptX-Xtra sobre VoIP
           </span>
         </motion.h1>
 
@@ -211,8 +211,9 @@ export default function Descarga() {
           transition={{ duration: 0.55, delay: 0.12 }}
           className="mt-5 text-slate-600 text-base sm:text-lg max-w-xl mx-auto leading-relaxed"
         >
-          Instala en Ubuntu Server 22.04 con una sola linea. Incluye panel web, encoder POCSAG,
-          integracion con Asterisk, backups automaticos y carpeta <code className="font-mono text-indigo-600">src/</code> completa.
+          Instala en Ubuntu Server 22.04 con una sola linea. ZetronPOC registra internos contra la central
+          FreePBX del hospital, contesta con un IVR (probar *99) y entrega un panel tipo FreePBX para
+          gestionar extensiones, pagers, encoder y envios. Configurable al 100% desde la web.
         </motion.p>
 
         <motion.div
@@ -248,7 +249,7 @@ export default function Descarga() {
           transition={{ duration: 0.5, delay: 0.25 }}
           className="mt-7 flex flex-wrap gap-2 justify-center"
         >
-          {["Asterisk", "PJSIP", "Python", "SQLite", "Ubuntu 22.04"].map((t) => (
+          {["Asterisk", "PJSIP", "FreePBX", "Python", "SQLite", "Ubuntu 22.04"].map((t) => (
             <span
               key={t}
               className="text-xs font-mono text-slate-500 bg-white/60 backdrop-blur border border-slate-200 rounded-full px-3 py-1"
@@ -300,7 +301,7 @@ export default function Descarga() {
                 <h2 className="font-display font-bold text-lg text-slate-900">Descarga offline (ZIP)</h2>
                 <p className="text-sm text-slate-500 leading-relaxed">
                   <code className="font-mono text-indigo-600">instalador.sh</code> + carpeta{" "}
-                  <code className="font-mono text-indigo-600">src/</code> completa (frontend + pocsag-server).
+                  <code className="font-mono text-indigo-600">src/</code> completa (ZetronPOC cliente FreePBX).
                 </p>
               </div>
             </div>
@@ -312,7 +313,7 @@ export default function Descarga() {
               className="w-full bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 hover:brightness-105 disabled:opacity-60 text-white font-semibold py-3.5 rounded-2xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30"
             >
               {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-              {busy ? "Empaquetando..." : "Descargar pocsag-completo.zip"}
+              {busy ? "Empaquetando..." : "Descargar zetronpoc.zip"}
             </motion.button>
             {ok && (
               <div className="mt-4 flex items-start gap-2 text-sm text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl px-4 py-3">
@@ -364,7 +365,7 @@ export default function Descarga() {
           </p>
           <CmdBlock
             id="b"
-            text={`git clone ${REPO} /tmp/pocsag && cd /tmp/pocsag && sudo bash instalador.sh`}
+            text={`git clone ${REPO} /tmp/zetronpoc && cd /tmp/zetronpoc && sudo bash src/zetronpoc/instalador.sh`}
             label="git clone"
           />
           <button
@@ -393,7 +394,7 @@ export default function Descarga() {
           </p>
           <CmdBlock
             id="up"
-            text={`sudo bash instalador.sh --update && sudo systemctl restart pocsag-api`}
+            text={`sudo bash src/zetronpoc/instalador.sh --update && sudo systemctl restart zetronpoc-api`}
             label="update"
           />
           <p className="text-[11px] text-slate-400 mt-2">
@@ -442,8 +443,8 @@ export default function Descarga() {
           </div>
           <div className="font-mono text-xs space-y-2 text-slate-300">
             <div><span className="text-slate-500">$</span> curl -fsSL {RAW} | sudo bash</div>
-            <div className="text-emerald-400">{"->"} Instalando dependencias, Asterisk, encoder y servicios...</div>
-            <div><span className="text-slate-500">$</span> sudo bash instalador.sh --update</div>
+            <div className="text-emerald-400">{"->"} Instalando ZetronPOC: Asterisk, encoder y servicios cliente...</div>
+            <div><span className="text-slate-500">$</span> sudo bash src/zetronpoc/instalador.sh --update</div>
             <div className="text-emerald-400">{"->"} Panel publico: http://localhost:8080/</div>
             <div className="text-emerald-400">{"->"} Panel admin  : http://localhost:8080/admin</div>
           </div>
@@ -452,7 +453,7 @@ export default function Descarga() {
 
       <footer className="relative z-10 max-w-5xl mx-auto px-6 mt-10 mb-10 flex items-center justify-center gap-2 text-xs text-slate-400">
         <Server className="w-3.5 h-3.5" />
-        Despliegue en Ubuntu Server 22.04 LTS &middot; POCSAG sobre VoIP
+        Despliegue en Ubuntu Server 22.04 LTS &middot; ZetronPOC v2.0 · Zetron 640 / DaptX-Xtra
       </footer>
     </div>
   );

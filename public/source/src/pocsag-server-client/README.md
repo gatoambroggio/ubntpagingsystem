@@ -1,56 +1,80 @@
-# pocsag-server-client v1.0client
+# Pogsac
 
-Sistema de paginación hospitalaria POCSAG — **variante cliente**.
+Sistema de paginacion hospitalaria POCSAG (modo cliente) - STANDALONE.
 
-A diferencia del servidor autónomo (`pocsag-server`), esta versión **no es una central telefónica propia**. Se comporta como 4 internos VoIP (3000-3003) que se registran contra la central existente del hospital, y cuando alguien del hospital marca 177, la central enruta la llamada a uno de estos internos, que dispara el IVR de paginación.
+## Arquitectura (v1.0)
 
-## Arquitectura
+- **Totalmente self-contained**: no depende de `instalador.sh` ni de `pjsip_pocsag.conf`.
+- **Todo en la base de datos**: IP del hospital, transporte, codecs, claves, etc.
+- **PJSIP self-contained**: `pjsip_hospital.conf` incluye su propio `[transport-udp]`.
+- **pjsip.conf** solo incluye `pjsip_hospital.conf` (sin transportes duplicados).
 
-```
-[Hospital PBX] <--SIP Register-- [Ubuntu / Asterisk (pocsag-server-client)]
-      |                                |
-      |  marca 177                      |  4 internos: 3000, 3001, 3002, 3003
-      +----------------------------->   |  cualquiera atiende -> IVR 2184 -> AGI POCSAG
-```
-
-- **3000, 3001, 3002, 3003**: internos que el servidor Ubuntu registra en la central del hospital.
-- **177**: número que el hospital enruta hacia cualquiera de los 4 internos libres.
-- **2184**: IVR de paginación interno (mismo flujo que el servidor autónomo).
-
-## Instalación (una línea desde GitHub)
+## Instalacion (una linea)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash
 ```
 
-El instalador:
-1. Descarga y ejecuta el sistema base POCSAG (`instalador.sh`).
-2. Descarga `pjsip_hospital.conf` (4 registros 3000-3003) y `extensions_hospital.conf` (ruteo 177/3000-3003 → IVR 2184).
-3. Los incluye en `pjsip.conf` y `extensions.conf` sin pisar la config que el panel admin regenera.
-4. Marca la versión `1.0client` en la base y recarga Asterisk.
+## Actualizar (sin perder configuracion)
 
-Actualizar solo la config cliente (sin reinstalar la base):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_client.sh | sudo bash -s -- --update
 ```
 
-### Después de instalar
-Editar las credenciales reales del hospital:
+El `--update` NO pisara la IP del hospital ni las claves ya configuradas.
+Regenera `pjsip_hospital.conf` desde la base de datos automaticamente.
+
+## Como funciona
+
+1. Los internos 2000-2010 se registran contra la central VoIP del hospital (FreePBX, PJSIP registration).
+2. Desde cualquier telefono de la central, al marcar 2000-2010 o 177, la central enruta la llamada al Asterisk.
+3. El Asterisk contesta con el IVR: codigo -> mensaje -> envio POCSAG.
+
+## Configuracion post-install (todo desde el panel admin)
+
+`http://servidor:8080/admin` (admin / admin123):
+
+1. **Parametros** -> IP central del hospital (default 192.168.2.97) -> Guardar
+2. **Extensiones** -> editar cada interno (2000-2010) con su clave real
+3. **Extensiones** -> Aplicar a Asterisk (regenera `pjsip_hospital.conf`)
+4. La columna "Registro" muestra Registered / No registrado en vivo (auto-refresh 5s)
+
+## Parametros gestionados desde la base de datos
+
+| Clave BD | Descripcion | Default |
+|----------|-------------|---------|
+| `hospital_pbx_ip` | IP de la central del hospital (FreePBX) | `192.168.2.97` |
+| `transport_bind` | Bind del transporte UDP | `0.0.0.0:5060` |
+| `transport_protocol` | Protocolo transporte | `udp` |
+| `codecs` | Codecs permitidos | `ulaw,alaw` |
+| `retry_interval` | Intervalo reintento registro | `60` |
+| `expiration` | Expiracion registro | `3600` |
+| `test_mode` | Modo prueba (sin radio) | `1` |
+
+## Verificacion por consola
+
 ```bash
-sudo nano /etc/asterisk/pjsip_hospital.conf   # reemplazar IP_HOSPITAL y passwords
-sudo asterisk -rx "pjsip reload"
+sudo asterisk -rx 'pjsip show registrations'
+sudo asterisk -rx 'dialplan show pocsag-incoming'
+cat /etc/asterisk/pjsip_hospital.conf
 ```
 
-## Verificación
+## Archivos clave
 
-```bash
-# Los 4 internos deben decir "Registered"
-sudo asterisk -rx "pjsip show registrations"
+| Archivo | Funcion |
+|---------|---------|
+| `instalador_client.sh` | Instalador standalone (raiz del repo) |
+| `backend/app.py` | API REST + panel web |
+| `database/db_manager.py` | BD + `generar_pjsip_hospital_conf()` |
+| `database/schema.sql` | Esquema BD (todas las tablas) |
+| `database/seed.sql` | Datos iniciales (2000-2010, pagers, config) |
+| `frontend/admin.html` | Panel admin con gestion completa |
+| `frontend/index.html` | Pagina publica de envio |
+| `asterisk/pjsip_hospital.conf` | Template inicial (se regenera desde BD) |
+| `asterisk/extensions_hospital.conf` | IVR autocontenido |
+| `agi/pocsag_handler.py` | AGI: procesa llamadas IVR |
+| `encoder/pocsag_gen.py` | Codificador POCSAG |
 
-# Llamar desde un interno del hospital al 177
-# Debe escuchar: "marque el código" (IVR de paginación)
-```
+## Version
 
-## Versión
-
-**1.0client** — primera versión cliente (hospital integration).
+1.0 (Pogsac - FreePBX 192.168.2.97, internos 2000-2010)
