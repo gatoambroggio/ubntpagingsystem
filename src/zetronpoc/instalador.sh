@@ -211,6 +211,15 @@ systemctl daemon-reload
 systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
 asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
 asterisk -rx "pjsip reload" 2>/dev/null || true
+sleep 1
+# Verificar que res_pjsip cargo el transporte; si no, forzar recarga del modulo
+if ! asterisk -rx "pjsip show transports" 2>/dev/null | grep -q "transport-udp"; then
+  warn "pjsip no cargo el transporte. Reintentando..."
+  asterisk -rx "module reload res_pjsip.so" 2>/dev/null || true
+  asterisk -rx "pjsip reload" 2>/dev/null || true
+  sleep 1
+fi
+asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || true
 systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
 systemctl enable --now zetronpoc-cola 2>/dev/null || true
 sleep 2
