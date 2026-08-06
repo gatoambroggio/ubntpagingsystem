@@ -11,6 +11,108 @@ sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "database"))
 import db_manager as db
 
+# ---- MMDVM (placa serial, sin .wav) ----
+MMDVM_KEYS = ["mmdvm_callsign", "mmdvm_serial_port", "mmdvm_baud", "mmdvm_frequency",
+              "mmdvm_duplex", "mmdvm_pocsag_baud", "mmdvm_tx_invert", "mmdvm_tx_level",
+              "mmdvm_rc_port", "mmdvm_display"]
+MMDVM_INI = os.path.join(APP_DIR, "mmdvm", "MMDVM.ini")
+
+def mmdvm_ini_content(c):
+    def g(k, d):
+        v = c.get(k, d)
+        return str(v if v not in (None, "") else d)
+    freq_mhz = float(g("mmdvm_frequency", "433.8"))
+    freq_hz = int(round(freq_mhz * 1000000))
+    call = g("mmdvm_callsign", "LU1ABC")
+    port = g("mmdvm_serial_port", "/dev/ttyUSB0")
+    baud = g("mmdvm_baud", "115200")
+    duplex = g("mmdvm_duplex", "0")
+    txinv = g("mmdvm_tx_invert", "1")
+    txlevel = g("mmdvm_tx_level", "50")
+    rcport = g("mmdvm_rc_port", "7642")
+    disp = g("mmdvm_display", "None")
+    dispen = "0" if disp == "None" else "1"
+    return """# MMDVM.ini - generado por panel ZetronPOC (MMDVM serial, sin .wav)
+[General]
+Callsign=%s
+Id=2040000
+Timeout=180
+Duplex=%s
+RFModeHang=10
+DMR=0
+DSTAR=0
+YSF=0
+P25=0
+NXDN=0
+POCSAG=1
+Display=%s
+
+[Modem]
+Port=%s
+BaudeRate=%s
+TXInvert=%s
+RXInvert=0
+PTTInvert=0
+TXDelay=100
+RXLevel=50
+DMRTXLevel=%s
+DSTAR_TXLevel=%s
+YSFTXLevel=%s
+P25TXLevel=%s
+NXDNTXLevel=%s
+POCSAGTXLevel=%s
+TXFrequency=%d
+RXFrequency=%d
+TXOffset=0
+RXOffset=0
+RSSIMapping=0:0,100:100
+UseCOSAsLockout=0
+
+[POCSAG]
+Enable=1
+Callsign=%s
+
+[Remote Control]
+Enable=1
+Port=%s
+
+[DAPNET]
+Enable=0
+
+[Display]
+Enabled=%s
+Type=%s
+Port=%s
+
+[Info]
+Enabled=0
+
+[Log]
+DisplayLevel=1
+FileLevel=1
+FilePath=/var/log/mmdvm
+FileRoot=MMDVM
+""" % (call, duplex, disp, port, baud, txinv, txlevel, txlevel, txlevel,
+       txlevel, txlevel, txlevel, freq_hz, freq_hz, call, rcport, dispen, disp, port)
+
+def aplicar_mmdvm(d=None):
+    if d:
+        for k, v in d.items():
+            if k in MMDVM_KEYS:
+                db.set_config(k, str(v))
+    db.set_config("ptt_mode", "mmdvm")
+    db.set_config("mmdvm_rc_host", "127.0.0.1")
+    c = db.all_config()
+    ini = mmdvm_ini_content(c)
+    os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
+    with open(MMDVM_INI, "w") as f:
+        f.write(ini)
+    r1 = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True)
+    subprocess.run(["systemctl", "restart", "zetronpoc-cola"], capture_output=True, text=True)
+    return {"ok": True, "path": MMDVM_INI,
+            "restart": getattr(r1, "returncode", -1) == 0,
+            "stderr": (getattr(r1, "stderr", "") or "").strip()[:200]}
+
 HOST, PORT = "0.0.0.0", 8080
 FRONT = os.path.join(APP_DIR, "frontend")
 ALLOWED_PBX = re.compile(r'^(pjsip show|pjsip send|pjsip unregister|pjsip reload|core show|core restart|'
@@ -141,6 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
 
         if p == "/api/config": return jok(self, db.all_config())
+        if p == "/api/mmdvm": return jok(self, {k: db.all_config().get(k, "") for k in MMDVM_KEYS})
         if p == "/api/extensions": return jok(self, db.listar_extensiones())
         if p == "/api/extensions/status": return jok(self, ext_status())
         if p == "/api/plantillas": return jok(self, db.listar_plantillas())
@@ -245,6 +348,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/config":
             for k, v in d.items(): db.set_config(k, str(v))
             return jok(self, {"ok": True})
+        if p == "/api/mmdvm":
+            return jok(self, aplicar_mmdvm(d))
         m = re.match(r'/api/extensions/(\d+)$', p)
         if m: db.actualizar_extension(int(m.group(1)), d); return jok(self, {"ok": True})
         m = re.match(r'/api/pagers/(\d+)$', p)
