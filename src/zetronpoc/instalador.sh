@@ -175,9 +175,8 @@ PYEOF
 chown "${AST_USER}:${AST_USER}" "${AST_ETC}/pjsip.conf" 2>/dev/null || true
 
 # ============================ 7. LOCUCIONES IVR ============================
-if [[ $UPDATE -eq 0 ]]; then
-  echo "==> 7/10 Generando locuciones del IVR..."
-  gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
+echo "==> 7/10 Generando locuciones del IVR (solo faltantes)..."
+gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
     espeak -v es -s 160 "$2" -w "${out%.gsm}.wav" 2>/dev/null && sox "${out%.gsm}.wav" -r 8000 -c 1 "$out" 2>/dev/null || warn "No se pudo generar $1"
     rm -f "${out%.gsm}.wav"; }
   gen despues-del-tono-marque-codigo "Despues del tono marque el numero de codigo"
@@ -190,9 +189,6 @@ if [[ $UPDATE -eq 0 ]]; then
   sox -n -r 8000 -c 1 "${APP_DIR}/audio/beep.gsm" synth 0.2 sine 1000 2>/dev/null || warn "beep no generado"
   cp "${APP_DIR}"/audio/*.gsm /var/lib/asterisk/sounds/ 2>/dev/null || true
   chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/sounds 2>/dev/null || true
-else
-  echo "==> 7/10 Locuciones IVR (omitidas en --update)"
-fi
 
 # ============================ 8. PERMISOS ==================================
 echo "==> 8/10 Ajustando permisos..."
@@ -213,7 +209,9 @@ for _ in $(seq 1 15); do
   asterisk -rx "core show uptime" >/dev/null 2>&1 && break
   sleep 1
 done
-asterisk -rx "pjsip send register *all" 2>/dev/null || true
+for n in $(sqlite3 "${DB}" "SELECT numero FROM extensiones WHERE activo=1" 2>/dev/null); do
+  asterisk -rx "pjsip send register reg-${n}" 2>/dev/null || true
+done
 asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || warn "transport-udp no visible tras restart"
 systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
 systemctl enable --now zetronpoc-cola 2>/dev/null || true
