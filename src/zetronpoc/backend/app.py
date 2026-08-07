@@ -353,8 +353,27 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/extensions/aplicar":
             ok, msg = db.generar_pjsip_conf()
             if ok:
-                subprocess.run(["asterisk", "-rx", "pjsip reload"], capture_output=True, timeout=10)
-                subprocess.run(["asterisk", "-rx", "pjsip send register"], capture_output=True, timeout=10)
+                reload_out = ""
+                need_restart = False
+                try:
+                    r = subprocess.run(["asterisk", "-rx", "pjsip reload"], capture_output=True, text=True, timeout=10)
+                    reload_out = ((r.stdout or "") + (r.stderr or ""))
+                    if r.returncode != 0 or "didn't finish" in reload_out.lower():
+                        need_restart = True
+                except Exception:
+                    need_restart = True
+                if need_restart:
+                    try:
+                        subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=25)
+                        time.sleep(3)
+                    except Exception:
+                        pass
+                try:
+                    subprocess.run(["asterisk", "-rx", "pjsip send register *all"], capture_output=True, text=True, timeout=10)
+                except Exception:
+                    pass
+                st = ext_status()
+                return jok(self, {"ok": True, "salida": msg, "registraciones": st})
             return jok(self, {"ok": ok, "salida": msg})
         if p == "/api/pagers":
             return jok(self, {"id": db.crear_pager(d)})
@@ -385,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
             r = subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=20)
             return jok(self, {"salida": r.stdout or r.stderr or "reiniciado"})
         if p == "/api/pbx/force-register":
-            r = pbx_run("pjsip send register")
+            r = pbx_run("pjsip send register *all")
             return jok(self, {"salida": r.get("salida", "ok")})
         if p == "/api/pbx/unregister":
             r = pbx_run("pjsip unregister")
