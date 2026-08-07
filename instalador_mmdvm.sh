@@ -66,7 +66,7 @@ log "Base ZetronPOC presente en ${APP_DIR}"
 
 note "1/8 Instalando dependencias de compilacion..."
 apt-get update -y
-apt-get install -y build-essential git libudev-dev curl ca-certificates netcat-openbsd socat || warn "Algun paquete pudo faltar"
+apt-get install -y build-essential git libudev-dev curl ca-certificates netcat-openbsd socat nlohmann-json3-dev || warn "Algun paquete pudo faltar"
 
 note "2/8 Compilando MMDVMHost (G4KLX)..."
 MMDVMHOST_SRC="/opt/src/MMDVMHost"
