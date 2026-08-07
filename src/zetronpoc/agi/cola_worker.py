@@ -5,7 +5,7 @@ import sys, os, time
 APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
 sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "database"))
-from db_manager import procesar_siguiente_cola, get_conn, DEFAULT_DB
+from db_manager import procesar_siguiente_cola, get_conn, DEFAULT_DB, registrar_log
 
 LOG = os.path.join(APP_DIR, "logs/cola.log")
 
@@ -14,6 +14,10 @@ def clog(m):
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with open(LOG, "a") as f:
             f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " " + m + "\n")
+    except Exception:
+        pass
+    try:
+        registrar_log("info", "cola", m)
     except Exception:
         pass
 
