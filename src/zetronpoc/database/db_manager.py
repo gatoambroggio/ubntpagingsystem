@@ -207,9 +207,17 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
         if not (e.get("password") or "").strip():
             return False, "La extension %s no tiene clave" % e["numero"]
 
-    transport_bind = cfg.get("transport_bind", "0.0.0.0:5060")
-    transport_proto = cfg.get("transport_protocol", "udp")
-    codecs = cfg.get("codecs", "ulaw,alaw")
+    # Sanitizar bind: PJSIP usa IP:PORT (dos puntos). Si el admin puso IP/PORT (barra)
+    # o pegó la IP remota del hospital, corregir a un bind local valido (0.0.0.0:5060).
+    raw_bind = (cfg.get("transport_bind") or "0.0.0.0:5060").strip().replace("/", ":")
+    if ":" not in raw_bind:
+        raw_bind = (raw_bind or "0.0.0.0") + ":5060"
+    bind_host = raw_bind.split(":")[0]
+    if not bind_host or bind_host == (cfg.get("hospital_pbx_ip") or "").strip():
+        raw_bind = "0.0.0.0:5060"
+    transport_bind = raw_bind
+    transport_proto = (cfg.get("transport_protocol") or "udp").strip() or "udp"
+    codecs = (cfg.get("codecs") or "ulaw,alaw").strip() or "ulaw,alaw"
     retry_interval = cfg.get("retry_interval", "60")
     expiration = cfg.get("expiration", "3600")
     pbx_port = (cfg.get("hospital_pbx_port", "5060") or "5060").strip()
