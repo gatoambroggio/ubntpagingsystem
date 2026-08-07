@@ -209,13 +209,9 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
 
     # Sanitizar bind: PJSIP usa IP:PORT (dos puntos). Si el admin puso IP/PORT (barra)
     # o pegó la IP remota del hospital, corregir a un bind local valido (0.0.0.0:5060).
-    raw_bind = (cfg.get("transport_bind") or "0.0.0.0:5060").strip().replace("/", ":")
-    if ":" not in raw_bind:
-        raw_bind = (raw_bind or "0.0.0.0") + ":5060"
-    bind_host = raw_bind.split(":")[0]
-    if not bind_host or bind_host == (cfg.get("hospital_pbx_ip") or "").strip():
-        raw_bind = "0.0.0.0:5060"
-    transport_bind = raw_bind
+    # El bind del transporte es LOCAL: siempre 0.0.0.0:5060 para un cliente que se
+    # registra hacia la central. No configurable (setear la IP del hospital rompe el transporte).
+    transport_bind = "0.0.0.0:5060"
     transport_proto = (cfg.get("transport_protocol") or "udp").strip() or "udp"
     codecs = (cfg.get("codecs") or "ulaw,alaw").strip() or "ulaw,alaw"
     retry_interval = cfg.get("retry_interval", "60")
