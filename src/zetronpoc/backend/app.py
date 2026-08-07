@@ -365,10 +365,18 @@ class Handler(BaseHTTPRequestHandler):
                         need_restart = True
                 except Exception:
                     need_restart = True
+                # pjsip reload devuelve OK aunque el transporte no rebindee 5060 (socket viejo no soltado).
+                # Si transport-udp no aparece tras el reload, forzamos restart de Asterisk.
+                try:
+                    tr = subprocess.run(["asterisk", "-rx", "pjsip show transports"], capture_output=True, text=True, timeout=10)
+                    if "transport-udp" not in ((tr.stdout or "") + (tr.stderr or "")):
+                        need_restart = True
+                except Exception:
+                    need_restart = True
                 if need_restart:
                     try:
                         subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=25)
-                        time.sleep(3)
+                        time.sleep(4)
                     except Exception:
                         pass
                 try:
