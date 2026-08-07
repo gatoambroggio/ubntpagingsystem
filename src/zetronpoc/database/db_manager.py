@@ -463,9 +463,18 @@ def historial(filtros, limit=50, offset=0, db_path=DEFAULT_DB):
 
 # ===================== AUTH =====================
 def login_validar(user, passw, db_path=DEFAULT_DB):
-    au = get_config("admin_user", "admin"); ap = get_config("admin_pass", "admin123")
+    """Autentica al operador. Nunca lanza: si la BD es inaccesible, usa
+    admin/admin123 para que el panel nunca quede bloqueado."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS config (clave TEXT PRIMARY KEY, valor TEXT)")
+            conn.execute("INSERT OR IGNORE INTO config (clave,valor) VALUES ('admin_user','admin')")
+            conn.execute("INSERT OR IGNORE INTO config (clave,valor) VALUES ('admin_pass','admin123')")
+        au = get_config("admin_user", "admin", db_path); ap = get_config("admin_pass", "admin123", db_path)
+    except Exception:
+        au, ap = "admin", "admin123"
     if user == au and passw == ap:
-        tok = secrets.token_hex(16); _TOKENS[tok] = time.time() + 86400; return tok
+        tok = secrets.token_hex(16); _TOKENS[tok] = {"user": user, "exp": time.time() + 86400}; return tok
     return None
 
 def verificar_token(tok):
@@ -584,6 +593,22 @@ def estadisticas(db_path=DEFAULT_DB):
         total_err = conn.execute("SELECT COUNT(*) AS c FROM bitacora WHERE estado='error'").fetchone()["c"]
     return {"por_dia": por_dia, "por_hora": por_hora, "top_pagers": top_pagers,
             "total_enviados": total_env, "total_ok": total_ok, "total_err": total_err, "cola": estado_cola(db_path)}
+
+def registrar_log(nivel, origen, mensaje, db_path=DEFAULT_DB):
+    """Log centralizado en SQLite. Best-effort: crea la tabla si no existe,
+    nunca rompe la peticion que lo invoca."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS logs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "fecha_hora TEXT, nivel TEXT, origen TEXT, mensaje TEXT)")
+            conn.execute(
+                "INSERT INTO logs (fecha_hora,nivel,origen,mensaje) VALUES (?,?,?,?)",
+                (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 str(nivel)[:16], str(origen)[:32], str(mensaje)[:500]))
+    except Exception:
+        pass
 
 def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
     paths = {"asterisk": "/var/log/asterisk/messages", "api": "/opt/zetronpoc/logs/api.log",
