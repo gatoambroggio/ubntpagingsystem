@@ -363,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
             email = d.get("email", db.get_config("backup_email"))
             r = db.enviar_email(email, "ZetronPOC - test SMTP", "Prueba OK")
             return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
+        if p == "/api/mmdvm":
+            return jok(self, aplicar_mmdvm(d))
         return jtext(self, "no encontrado", 404)
 
     def do_PUT(self):
