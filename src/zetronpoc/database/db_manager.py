@@ -544,6 +544,27 @@ def estadisticas(db_path=DEFAULT_DB):
     return {"por_dia": por_dia, "por_hora": por_hora, "top_pagers": top_pagers,
             "total_enviados": total_env, "total_ok": total_ok, "total_err": total_err, "cola": estado_cola(db_path)}
 
+def registrar_log(nivel, origen, mensaje, db_path=DEFAULT_DB):
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, nivel TEXT, origen TEXT, mensaje TEXT)")
+            conn.execute("INSERT INTO logs(fecha_hora,nivel,origen,mensaje) VALUES(?,?,?,?)",
+                (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), (nivel or "info")[:20], (origen or "api")[:20], str(mensaje)[:2000]))
+    except Exception:
+        pass
+
+def listar_logs(origen=None, limit=300, db_path=DEFAULT_DB):
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, nivel TEXT, origen TEXT, mensaje TEXT)")
+            if origen:
+                rows = conn.execute("SELECT * FROM logs WHERE origen=? ORDER BY id DESC LIMIT ?", (origen, limit)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+    except Exception:
+        return []
+
 def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
     if tipo == "mmdvm":
         out = []
@@ -594,6 +615,9 @@ def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
         except Exception as e:
             out.append("(error config: %s)" % str(e)[:120])
         return {"lineas": out, "path": "mmdvmhost: status + journal + ini + puertos + config"}
+    if tipo in ("api", "cola", "scheduler"):
+        rows = listar_logs(origen=tipo, limit=limit, db_path=db_path)
+        return {"lineas": ["%s [%s] %s" % (r["fecha_hora"], r.get("nivel") or "-", r.get("mensaje") or "") for r in rows], "path": "db:logs (origen=%s)" % tipo}
     paths = {"asterisk": "/var/log/asterisk/messages", "api": "/opt/zetronpoc/logs/api.log",
              "cola": "/opt/zetronpoc/logs/cola.log", "install": "/var/log/zetronpoc-install.log",
              "scheduler": "/opt/zetronpoc/logs/scheduler.log"}
