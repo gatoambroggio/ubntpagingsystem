@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>ZetronPOC · MMDVM</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
-:root{--bg:#05060f;--bg2:#080b1a;--panel:rgba(10,15,31,.72);--panel2:rgba(15,20,40,.85);--line:rgba(0,240,255,.18);--line2:rgba(255,0,212,.18);--txt:#d8e6ff;--mut:#5d7494;--acc:#00f0ff;--acc2:#ff00d4;--acc3:#7c5cff;--ok:#00ff9d;--err:#ff3b5c;--warn:#ffb800;--r:14px}
+:root{--bg:#f1f5f9;--bg2:#e2e8f0;--panel:#ffffff;--panel2:#f8fafc;--line:#e2e8f0;--line2:#cbd5e1;--txt:#0f172a;--mut:#64748b;--acc:#1d4ed8;--acc2:#0ea5e9;--acc3:#6366f1;--ok:#16a34a;--err:#dc2626;--warn:#d97706;--r:12px}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{font-family:'Rajdhani',sans-serif;color:var(--txt);background:var(--bg);overflow-x:hidden;position:relative}
@@ -94,6 +94,47 @@ pre{background:rgba(4,6,13,.95);border:1px solid var(--line);border-radius:10px;
 .sec-title::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
 .burger{display:none;width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(15,20,40,.7);color:var(--acc);font-size:20px;align-items:center;justify-content:center;cursor:pointer}
 @media(max-width:780px){.app{flex-direction:column}.side{width:100%;height:auto;position:sticky;top:0;z-index:30;flex-direction:row;align-items:center;justify-content:space-between;padding:.5rem 1rem}.side nav{display:none;position:absolute;top:100%;left:0;right:0;flex-direction:column;background:var(--panel2);border:1px solid var(--line);border-radius:0 0 14px 14px;padding:.4rem;max-height:70vh;overflow:auto}.side nav.open{display:flex}.side .bot{display:none}.content{padding:1rem}.burger{display:inline-flex}}
+
+/* === Light professional overrides (Claro) === */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+body{font-family:'Inter',system-ui,sans-serif!important;background:var(--bg)!important}
+h1,h2,h3,.brand,.btn,.nav-btn,.logo{font-family:'Inter',sans-serif!important;letter-spacing:-.01em!important}
+input,select,textarea{background:#fff!important;border:1px solid var(--line)!important;color:var(--txt)!important;font-family:'Inter',sans-serif!important}
+input:focus,select:focus,textarea:focus{border-color:var(--acc)!important;box-shadow:0 0 0 3px rgba(29,78,216,.12)!important}
+.btn{background:#fff!important;color:var(--txt)!important;border:1px solid var(--line)!important}
+.btn-pri{background:linear-gradient(135deg,var(--acc),var(--acc3))!important;color:#fff!important;box-shadow:0 4px 12px rgba(29,78,216,.25)!important;border:none!important}
+.btn-pri:hover{box-shadow:0 0 22px rgba(29,78,216,.4)}
+.btn-sec{background:#fff!important}
+.btn-sec:hover{border-color:var(--acc)!important;color:var(--acc)!important}
+.btn-ok{background:linear-gradient(135deg,#16a34a,#15803d)!important;color:#fff!important;border:none!important}
+.btn-del{background:linear-gradient(135deg,#dc2626,#b91c1c)!important;color:#fff!important;border:none!important}
+.btn-warn{background:linear-gradient(135deg,#d97706,#b45309)!important;color:#fff!important;border:none!important}
+.card{background:#fff!important;box-shadow:0 1px 3px rgba(15,23,42,.08),0 8px 24px rgba(15,23,42,.05)!important;border:1px solid var(--line)!important}
+.side{background:#fff!important;border-right:1px solid var(--line)!important}
+.logo{background:var(--acc)!important;box-shadow:0 6px 18px rgba(29,78,216,.2)!important;color:#fff!important}
+.nav-btn{color:var(--mut)!important}
+.nav-btn:hover{background:#f8fafc!important;color:var(--txt)!important}
+.nav-btn.active{background:#eff6ff!important;color:var(--acc)!important;border-color:#bfdbfe!important;box-shadow:none!important}
+.sw.on{background:linear-gradient(135deg,#16a34a,#15803d)!important;box-shadow:none!important}
+.sw::after{background:#fff!important}
+.sw:not(.on)::after{background:#94a3b8!important}
+.sw:not(.on){background:#cbd5e1!important}
+th,td{border-bottom:1px solid var(--line)!important}
+tbody tr:hover{background:#f8fafc!important}
+.badge.ok{background:rgba(22,163,74,.12)!important;color:var(--ok)!important;border-color:rgba(22,163,74,.25)!important}
+.badge.err{background:rgba(220,38,38,.12)!important;color:var(--err)!important;border-color:rgba(220,38,38,.25)!important}
+.badge.mut{background:rgba(100,116,139,.12)!important;color:var(--mut)!important;border-color:rgba(100,116,139,.25)!important}
+.pill{background:rgba(22,163,74,.12)!important;color:var(--ok)!important;border-color:rgba(22,163,74,.25)!important}
+.pill.off{background:rgba(220,38,38,.12)!important;color:var(--err)!important;border-color:rgba(220,38,38,.25)!important}
+.hint{background:#eff6ff!important;border-color:#bfdbfe!important;color:#1e40af!important}
+.stat{background:#fff!important;border:1px solid var(--line)!important;box-shadow:0 1px 3px rgba(15,23,42,.06)!important}
+.stat::after{background:linear-gradient(90deg,var(--acc),var(--acc2))!important}
+pre{background:#0f172a!important;border-color:var(--line)!important;color:#93c5fd!important}
+.modal{background:rgba(15,23,42,.5)!important}
+.modal .card{background:#fff!important}
+::-webkit-scrollbar-thumb{background:rgba(29,78,216,.2)!important}
+.login .box{box-shadow:0 8px 32px rgba(15,23,42,.1)!important}
+.topbar h1 span{background:linear-gradient(90deg,var(--acc),var(--acc2))!important;-webkit-background-clip:text;background-clip:text;color:transparent}
 </style></head>
 <body>
 <div class="login" id="login">
