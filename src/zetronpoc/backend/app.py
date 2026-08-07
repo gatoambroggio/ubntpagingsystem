@@ -96,22 +96,36 @@ FileRoot=MMDVM
        txlevel, txlevel, txlevel, freq_hz, freq_hz, call, rcport, dispen, disp, port)
 
 def aplicar_mmdvm(d=None):
-    if d:
-        for k, v in d.items():
-            if k in MMDVM_KEYS:
-                db.set_config(k, str(v))
-    db.set_config("ptt_mode", "mmdvm")
-    db.set_config("mmdvm_rc_host", "127.0.0.1")
-    c = db.all_config()
-    ini = mmdvm_ini_content(c)
-    os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
-    with open(MMDVM_INI, "w") as f:
-        f.write(ini)
-    r1 = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True)
-    subprocess.run(["systemctl", "restart", "zetronpoc-cola"], capture_output=True, text=True)
-    return {"ok": True, "path": MMDVM_INI,
-            "restart": getattr(r1, "returncode", -1) == 0,
-            "stderr": (getattr(r1, "stderr", "") or "").strip()[:200]}
+    try:
+        if d:
+            for k, v in d.items():
+                if k in MMDVM_KEYS:
+                    db.set_config(k, str(v))
+        db.set_config("ptt_mode", "mmdvm")
+        db.set_config("mmdvm_rc_host", "127.0.0.1")
+        c = db.all_config()
+        ini = mmdvm_ini_content(c)
+        os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
+        with open(MMDVM_INI, "w") as f:
+            f.write(ini)
+        r1 = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True, timeout=20)
+        subprocess.run(["systemctl", "restart", "zetronpoc-cola"], capture_output=True, text=True, timeout=20)
+        restart_ok = getattr(r1, "returncode", -1) == 0
+        detail = ((getattr(r1, "stderr", "") or "").strip() or (getattr(r1, "stdout", "") or "").strip())
+        status_txt = ""
+        if not restart_ok:
+            try:
+                st = subprocess.run(["systemctl", "status", "mmdvmhost", "--no-pager", "-n", "15"],
+                                    capture_output=True, text=True, timeout=10)
+                status_txt = ((st.stdout or "") + (st.stderr or "")).strip()[-800:]
+            except Exception as se:
+                status_txt = "status: %s" % str(se)[:120]
+        return {"ok": restart_ok, "path": MMDVM_INI, "restart": restart_ok,
+                "stderr": detail[:500], "status": status_txt}
+    except Exception as e:
+        import traceback
+        return {"ok": False, "error": str(e), "stderr": traceback.format_exc()[-800:]}
+
 
 HOST, PORT = "0.0.0.0", 8080
 FRONT = os.path.join(APP_DIR, "frontend")
@@ -239,6 +253,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/pagers": return jok(self, db.buscar_pagers(q.get("q", [""])[0]))
         if p == "/api/grupos": return jok(self, db.buscar_grupos(q.get("q", [""])[0]))
         if p == "/api/login": return jtext(self, "use POST", 405)
+        if p == "/api/historial/public":
+            return jok(self, db.historial({}, 50, 0))
         # auth
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
 
