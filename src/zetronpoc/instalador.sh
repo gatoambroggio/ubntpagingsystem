@@ -5,11 +5,10 @@
 # Registra internos SIP contra la central FreePBX del hospital y reproduce un
 # IVR (igual al 2184) cuando alguien marca esos internos.
 #
-# Instalacion (una linea):
+# Instalacion y actualizacion (una sola linea, auto-detecta):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh | sudo bash
-#
-# Actualizar (sin reinstalar Asterisk/deps):
-#   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh | sudo bash -s -- --update
+# Si ya esta instalado -> actualiza sin tocar Asterisk/deps. Si no -> instala completo.
+# Para forzar reinstalacion completa: ... | sudo bash -s -- --full
 # ============================================================================
 set -euo pipefail
 
@@ -21,6 +20,12 @@ DB="${APP_DIR}/database/zetronpoc.db"
 VERSION="2.0"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
+[[ "${1:-}" == "--full" ]] && UPDATE=0
+# Auto-detectar: si ya hay una instalacion (existe la BD), actualizar en vez de reinstalar.
+if [[ $UPDATE -eq 0 ]] && [[ -f "${DB}" ]]; then
+  echo "==> Instalacion previa detectada -> modo actualizacion (usar --full para reinstalar)"
+  UPDATE=1
+fi
 
 G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; NC="\033[0m"
 log(){ echo -e "${G}[OK]${NC}   $*"; }
