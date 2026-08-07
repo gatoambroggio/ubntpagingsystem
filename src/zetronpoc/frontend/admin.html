@@ -173,7 +173,7 @@ pre{background:rgba(4,6,13,.95);border:1px solid var(--line);border-radius:10px;
     <div class="tab" id="t-cfg"><div class="card"><h2>⚙ Parametros del sistema</h2>
       <div class="sec-title">⇄ PBX / SIP (FreePBX)</div>
       <div class="row"><div><label>IP central hospital</label><input id="c_hospital_pbx_ip"></div><div><label>Puerto SIP</label><input id="c_hospital_pbx_port"></div></div>
-      <div class="row"><div><label>Bind transporte</label><input id="c_transport_bind"></div><div><label>Protocolo</label><select id="c_transport_protocol"><option value="udp">UDP</option><option value="tcp">TCP</option></select></div></div>
+      <div class="row"><div><label>Bind local (fijo)</label><input id="c_transport_bind" value="0.0.0.0:5060" readonly style="opacity:.6"></div><div><label>Protocolo</label><select id="c_transport_protocol"><option value="udp">UDP</option><option value="tcp">TCP</option></select></div></div>
       <div class="row"><div><label>Modo sistema</label><input id="c_pocsag_mode" readonly style="opacity:.6"></div><div><label>Codecs</label><input id="c_codecs"></div></div>
       <div class="row"><div><label>Reintento reg (seg)</label><input id="c_retry_interval" type="number"></div><div><label>Expiracion (seg)</label><input id="c_expiration" type="number"></div></div>
 
