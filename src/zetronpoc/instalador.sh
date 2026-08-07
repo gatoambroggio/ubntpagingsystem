@@ -214,8 +214,10 @@ for n in $(sqlite3 "${DB}" "SELECT numero FROM extensiones WHERE activo=1" 2>/de
   asterisk -rx "pjsip send register reg-${n}" 2>/dev/null || true
 done
 asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || warn "transport-udp no visible tras restart"
-systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
-systemctl enable --now zetronpoc-cola 2>/dev/null || true
+systemctl enable zetronpoc-api 2>/dev/null || true
+systemctl restart zetronpoc-api 2>/dev/null || warn "API no pudo reiniciarse"
+systemctl enable zetronpoc-cola 2>/dev/null || true
+systemctl restart zetronpoc-cola 2>/dev/null || true
 sleep 2
 
 # ============================ 9.5 MMDVM (automatico) =========================
