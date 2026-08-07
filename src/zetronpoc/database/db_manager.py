@@ -243,7 +243,7 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
             "[reg-%s]" % num, "type=registration", "transport=transport-udp",
             "outbound_auth=auth-%s" % num, "server_uri=sip:%s" % sip_target,
             "client_uri=sip:%s@%s" % (num, sip_target), "retry_interval=%s" % retry_interval,
-            "expiration=%s" % expiration, "contact_user=%s" % num, "",
+            "expiration=%s" % expiration, "contact_user=%s" % num,\n            "line=yes", "endpoint=%s" % num, "",
             "[auth-%s]" % num, "type=auth", "auth_type=userpass",
             "username=%s" % num, "password=%s" % pw, "",
         ]
