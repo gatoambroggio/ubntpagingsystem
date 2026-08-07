@@ -120,6 +120,13 @@ def aplicar_mmdvm(d=None):
                 status_txt = ((st.stdout or "") + (st.stderr or "")).strip()[-800:]
             except Exception as se:
                 status_txt = "status: %s" % str(se)[:120]
+        try:
+            with open(os.path.join(APP_DIR, "logs", "mmdvm.log"), "a") as _lf:
+                _lf.write("%s | aplicar_mmdvm | %s | restart=%s | %s\n" % (
+                    time.strftime("%Y-%m-%d %H:%M:%S"), "OK" if restart_ok else "FALLO",
+                    restart_ok, (detail or "ok")[:200]))
+        except Exception:
+            pass
         return {"ok": restart_ok, "path": MMDVM_INI, "restart": restart_ok,
                 "stderr": detail[:500], "status": status_txt}
     except Exception as e:
