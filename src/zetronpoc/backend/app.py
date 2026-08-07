@@ -303,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/theme": return jok(self, db.all_config())
         if p == "/api/pagers": return jok(self, db.buscar_pagers(q.get("q", [""])[0]))
         if p == "/api/grupos": return jok(self, db.buscar_grupos(q.get("q", [""])[0]))
+        if p == "/api/plantillas/public": return jok(self, [t for t in db.listar_plantillas() if int(t.get("activo",0))])
         if p == "/api/login": return jtext(self, "use POST", 405)
         if p == "/api/historial/public":
             return jok(self, db.historial({}, 50, 0))
