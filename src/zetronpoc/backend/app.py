@@ -143,6 +143,29 @@ def aplicar_mmdvm(d=None):
         return {"ok": False, "error": str(e), "stderr": traceback.format_exc()[-800:]}
 
 
+def instalar_mmdvm():
+    """Descarga y ejecuta instalador_mmdvm.sh: compila MMDVMHost, crea el
+    servicio systemd y el puente POCSAG. Puede tardar varios minutos."""
+    url = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_mmdvm.sh"
+    try:
+        dl = subprocess.run(["curl", "-fsSL", url], capture_output=True, text=True, timeout=60)
+        if dl.returncode != 0:
+            return {"ok": False, "error": "no se pudo descargar el instalador: %s" % (dl.stderr or "")[:200]}
+        script_path = os.path.join(APP_DIR, "scripts", "instalador_mmdvm.sh")
+        os.makedirs(os.path.dirname(script_path), exist_ok=True)
+        with open(script_path, "w") as f:
+            f.write(dl.stdout)
+        os.chmod(script_path, 0o755)
+        r = subprocess.run(["bash", script_path], capture_output=True, text=True, timeout=600)
+        return {"ok": r.returncode == 0, "returncode": r.returncode,
+                "salida": (r.stdout or "")[-3000:], "stderr": (r.stderr or "")[-1000:],
+                "script": script_path}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "timeout: la compilacion tardo mas de 10 minutos. Ejecuta manualmente: curl -fsSL %s | sudo bash" % url}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 HOST, PORT = "0.0.0.0", 8080
 FRONT = os.path.join(APP_DIR, "frontend")
 ALLOWED_PBX = re.compile(r'^(pjsip show|pjsip send|pjsip unregister|pjsip reload|core show|core restart|'
