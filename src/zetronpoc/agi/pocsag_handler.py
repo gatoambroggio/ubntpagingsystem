@@ -8,7 +8,7 @@ import sys, os, subprocess, datetime, time
 APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
 sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "database"))
-from db_manager import resolver_destino, registrar_bitacora, encolar_mensaje, get_config
+from db_manager import resolver_destino, registrar_bitacora, encolar_mensaje, get_config, registrar_log
 
 ENCODER = os.path.join(APP_DIR, "encoder/pocsag_gen.py")
 PTT_ON = os.path.join(APP_DIR, "scripts/ptt_on.sh")
@@ -21,6 +21,10 @@ def log(m):
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with open(LOG, "a") as f:
             f.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " | " + m + "\n")
+    except Exception:
+        pass
+    try:
+        registrar_log("info", "cola", m)
     except Exception:
         pass
 
