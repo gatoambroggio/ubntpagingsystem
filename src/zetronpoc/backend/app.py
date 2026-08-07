@@ -202,12 +202,20 @@ def pbx_run(cmd):
 
 def ext_status():
     out = {}
+    states = ("Registered", "Rejected", "Unregistered", "Trying", "Auth", "Sent", "Failed", "Stopped")
     try:
         r = subprocess.run(["asterisk", "-rx", "pjsip show registrations"], capture_output=True, text=True, timeout=10)
         for line in (r.stdout or "").splitlines():
-            m = re.match(r'\s*(\w+)/(.*?)\s+(\w+)\s+(\S+)', line)
-            if m and m.group(3) in ("Registered", "Rejected", "Unregistered", "Trying", "Auth", "Sent"):
-                out[m.group(1)] = m.group(3)
+            s = line.strip()
+            if not s or s.startswith("Registration") or s.startswith("="):
+                continue
+            mm = re.match(r'(\w+)/', s)
+            if not mm:
+                continue
+            num = mm.group(1)
+            toks = s.split()
+            status = next((t for t in reversed(toks) if t in states), toks[-1] if toks else "-")
+            out[num] = status
     except Exception:
         pass
     return out
