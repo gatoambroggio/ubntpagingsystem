@@ -214,6 +214,25 @@ systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
 systemctl enable --now zetronpoc-cola 2>/dev/null || true
 sleep 2
 
+# ============================ 9.5 MMDVM (automatico) =========================
+echo "==> 9.5/10 Modulo MMDVM (MMDVMHost + POCSAG serial)..."
+MMDVM_NEED=1
+if [[ -x /usr/local/bin/MMDVM-Host ]] && systemctl is-active --quiet mmdvmhost 2>/dev/null; then
+  log "MMDVMHost ya instalado y activo. Se omite."
+  MMDVM_NEED=0
+fi
+if [[ $MMDVM_NEED -eq 1 ]]; then
+  if curl -fsSL "${REPO}/instalador_mmdvm.sh" -o /tmp/instalador_mmdvm.sh 2>/dev/null; then
+    if bash /tmp/instalador_mmdvm.sh; then
+      log "MMDVMHost instalado y servicio mmdvmhost activo."
+    else
+      warn "Instalacion de MMDVM fallo. Reintenta: curl -fsSL ${REPO}/instalador_mmdvm.sh | sudo bash"
+    fi
+  else
+    warn "No se pudo descargar instalador_mmdvm.sh. MMDVM queda pendiente (pagina /mmdvm)."
+  fi
+fi
+
 # ============================ 10. CHEQUEO =================================
 echo "==> 10/10 Chequeo final..."
 if curl -sf "http://localhost:8080/api/health" >/dev/null 2>&1; then
@@ -236,6 +255,7 @@ echo "    2) Extensiones -> editar cada interno con su clave real"
 echo "    3) Extensiones -> Aplicar a Asterisk  (genera pjsip_zetronpoc.conf)"
 echo "    4) La columna 'Registro' debe quedar en Registered"
 echo "    5) Probar IVR: marcar *99 desde la central (escucha dos beeps)"
+echo "    6) MMDVM: ya instalado automaticamente. Configura callsign/puerto/frecuencia en Parametros y pulsa 'Aplicar a la placa'"
 echo ""
 echo "  Verificar por consola:"
 echo "    sudo asterisk -rx 'pjsip show registrations'"
