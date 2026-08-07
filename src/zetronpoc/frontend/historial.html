@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Historial · ZetronPOC</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root{--bg:#05060f;--panel:rgba(10,15,31,.7);--line:rgba(0,240,255,.18);--txt:#d8e6ff;--mut:#5d7494;--acc:#00f0ff;--acc2:#ff00d4;--acc3:#7c5cff;--ok:#00ff9d}
+*{box-sizing:border-box;margin:0;padding:0;font-family:'Rajdhani',sans-serif}
+body{min-height:100vh;color:var(--txt);background:var(--bg);position:relative;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;background:radial-gradient(900px 600px at 10% -10%,rgba(0,240,255,.12),transparent 60%),radial-gradient(820px 520px at 100% 0%,rgba(255,0,212,.10),transparent 55%);z-index:0}
+body::after{content:"";position:fixed;inset:0;background-image:linear-gradient(rgba(0,240,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,240,255,.04) 1px,transparent 1px);background-size:44px 44px;z-index:0;animation:g 30s linear infinite}
+@keyframes g{to{background-position:44px 44px}}
+.wrap{max-width:760px;margin:auto;padding:2rem;position:relative;z-index:1;width:100%}
+.head{text-align:center;margin-bottom:1.4rem}
+.logo{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;margin:0 auto .8rem;background:linear-gradient(135deg,var(--acc),var(--acc3),var(--acc2));color:#05060f;font-size:32px;font-weight:900;font-family:'Orbitron';box-shadow:0 0 36px rgba(0,240,255,.5)}
+h1{font-family:'Orbitron';font-size:1.4rem;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.06em}
+.sub{color:var(--mut);letter-spacing:.3em;font-size:.66rem;text-transform:uppercase;margin-top:.3rem}
+.card{background:var(--panel);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:16px;padding:1.4rem;box-shadow:0 0 50px rgba(0,240,255,.1)}
+h2{font-family:'Orbitron';font-size:.95rem;letter-spacing:.04em}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th{color:var(--mut);font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;font-family:'JetBrains Mono',monospace;text-align:left;padding:.4rem}
+td{padding:.3rem .4rem;border-bottom:1px solid rgba(0,240,255,.08)}
+.btn{cursor:pointer;border:none;border-radius:9px;padding:.5rem 1rem;font-family:'Orbitron';font-weight:700;font-size:.78rem;background:linear-gradient(135deg,var(--acc),var(--acc3));color:#04060d;box-shadow:0 0 18px rgba(0,240,255,.3)}
+.foot{text-align:center;margin-top:1.2rem}
+.foot a{color:var(--acc);text-decoration:none;font-size:.85rem;border:1px solid var(--line);padding:.5rem 1rem;border-radius:9px;background:var(--panel)}
+</style></head>
+<body>
+<div class="wrap">
+  <div class="head"><div class="logo">⏧</div><h1>HISTORIAL</h1><div class="sub">DAPT-X XTRA · Envios</div></div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.5rem">
+      <h2>Historial de envios</h2>
+      <button class="btn" onclick="descargarHistorial()">Descargar CSV</button>
+    </div>
+    <div style="max-height:62vh;overflow:auto">
+      <table>
+        <thead><tr><th>Fecha</th><th>Origen</th><th>Codigo</th><th>Cap</th><th>Mensaje</th><th>Estado</th></tr></thead>
+        <tbody id="histBody"><tr><td colspan="6" style="text-align:center;opacity:.6;padding:.6rem">Cargando...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="foot"><a href="/">&larr; Volver al despacho</a></div>
+  </div>
+</div>
+<script>
+async function loadHistorial(){
+  try{
+    var r=await fetch('/api/historial/public').then(function(r){return r.json();});
+    var rows=(r&&r.rows)||[];var tb=document.getElementById('histBody');
+    if(!rows.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;opacity:.6;padding:.6rem">Sin envios</td></tr>';return;}
+    var html='';
+    for(var i=0;i<rows.length;i++){
+      var x=rows[i];var e=x.estado||'-';
+      var col=e==='enviado'?'#00ff9d':e==='error'?'#ff3b5c':'#5d7494';
+      var bg=e==='enviado'?'rgba(0,255,157,.14)':e==='error'?'rgba(255,59,92,.14)':'rgba(93,116,148,.14)';
+      html+='<tr><td style="padding:.3rem">'+(x.fecha_hora||'').slice(0,16)+'</td><td style="padding:.3rem">'+(x.interno_origen||'-')+'</td><td style="padding:.3rem">'+(x.codigo||'-')+'</td><td style="padding:.3rem">'+(x.cap_code||'-')+'</td><td style="padding:.3rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+String(x.mensaje||'').replace(/"/g,'&quot;')+'">'+(x.mensaje||'')+'</td><td style="padding:.3rem"><span style="padding:.1rem .4rem;border-radius:999px;font-size:.66rem;font-family:JetBrains Mono,monospace;background:'+bg+';color:'+col+'">'+e+'</span></td></tr>';
+    }
+    tb.innerHTML=html;
+  }catch(e){document.getElementById('histBody').innerHTML='<tr><td colspan="6" style="text-align:center;color:#ff3b5c;padding:.6rem">Error al cargar historial</td></tr>';}
+}
+async function descargarHistorial(){
+  try{var r=await fetch('/api/historial/public').then(function(r){return r.json();});var rows=(r&&r.rows)||[];var lines=['fecha_hora,interno,codigo,cap_code,mensaje,baudios,estado,observaciones'];rows.forEach(function(x){lines.push([x.fecha_hora,x.interno_origen,x.codigo,x.cap_code,JSON.stringify(x.mensaje||''),x.baudios,x.estado,JSON.stringify(x.observaciones||'')].join(','));});var txt=lines.join('\n');var blob=new Blob([txt],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='historial_zetronpoc.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){alert('No se pudo descargar el historial');}
+}
+loadHistorial();
+</script>
+</body></html>
