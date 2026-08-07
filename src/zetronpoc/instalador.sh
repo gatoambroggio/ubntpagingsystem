@@ -160,6 +160,29 @@ PYEOF
 chmod 640 "${DB}" 2>/dev/null || true
 chown "${AST_USER}:${AST_USER}" "${DB}" 2>/dev/null || true
 
+# Seed demo messages so Dashboard/Historial show data on a fresh install
+python3 - <<'PYEOF'
+import sqlite3, datetime
+DB='/opt/zetronpoc/database/zetronpoc.db'
+try:
+    c=sqlite3.connect(DB)
+    n=c.execute("SELECT COUNT(*) FROM bitacora").fetchone()[0]
+    if n==0:
+        now=datetime.datetime.now()
+        for i in range(6):
+            ts=(now-datetime.timedelta(days=i, hours=i)).strftime("%Y-%m-%d %H:%M:%S")
+            est='enviado' if i%3 else ('encolado' if i%3==1 else 'error')
+            c.execute("INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones,cola_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                (ts,'200'+str(i%3),'TEST0'+str(i+1),'1234567','Mensaje de prueba '+str(i+1),'512',est,'',None))
+        c.commit()
+        print("[seed] 6 mensajes demo insertados en bitacora")
+    else:
+        print("[seed] bitacora ya tiene %d registros, no se insertan demos" % n)
+    c.close()
+except Exception as e:
+    print("[seed] WARN: %s" % e)
+PYEOF
+
 # ============================ 6. GENERAR PJSIP DESDE BD ====================
 echo "==> 6/10 Generando pjsip_zetronpoc.conf desde la base de datos..."
 python3 - <<'PYEOF'
