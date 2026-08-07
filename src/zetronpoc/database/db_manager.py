@@ -287,8 +287,35 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     if not dest:
         return {"status": "error", "detalle": "codigo inactivo o inexistente"}
     caps, baudios, tipo = dest
+    cap_list = [c.strip() for c in str(caps).split(",") if c.strip()]
     qid = encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path)
-    return {"status": "encolado", "detalle": "mensaje encolado (id=%d)" % qid, "id": qid}
+    # Procesar en caliente: transmite y registra bitacora ahora (no depende del worker).
+    handler = "/var/lib/asterisk/agi-bin/pocsag_handler.py"
+    if not os.path.exists(handler):
+        handler = os.path.join(os.path.dirname(__file__), "..", "agi", "pocsag_handler.py")
+    env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
+    obs = ""
+    try:
+        rc = subprocess.run([sys.executable, handler, origen or "web", codigo, mensaje],
+                            capture_output=True, text=True, timeout=60, env=env)
+        if rc.returncode != 0:
+            obs = (rc.stderr or rc.stdout or "fallo").strip()[:200]
+    except Exception as e:
+        obs = str(e)[:200]
+    estado = "encolado"
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT estado FROM bitacora WHERE codigo=? AND mensaje=? ORDER BY id DESC LIMIT ?",
+                            (codigo, mensaje, len(cap_list) or 1)).fetchall()
+        if rows:
+            estados = [r["estado"] for r in rows]
+            if all(e == "enviado" for e in estados):
+                estado = "enviado"
+            elif any(e == "error" for e in estados):
+                estado = "error"
+        conn.execute("UPDATE cola_envios SET estado=?, fecha_procesado=datetime('now','localtime'), observaciones=? WHERE id=?",
+                     (estado, obs, qid))
+    return {"status": estado, "detalle": "envio procesado" if estado == "enviado" else ("error: " + obs if obs else "sin confirmar"),
+            "id": qid, "observaciones": obs}
 
 def listar_cola(estado=None, limit=200, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -491,6 +518,14 @@ def estadisticas(db_path=DEFAULT_DB):
             "total_enviados": total_env, "total_ok": total_ok, "total_err": total_err, "cola": estado_cola(db_path)}
 
 def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
+    if tipo == "mmdvm":
+        try:
+            r = subprocess.run(["journalctl", "-u", "mmdvmhost", "-n", str(int(limit)), "--no-pager"],
+                               capture_output=True, text=True, timeout=15)
+            lineas = [l.rstrip() for l in (r.stdout or "").splitlines()][-int(limit):]
+            return {"lineas": lineas, "path": "journalctl -u mmdvmhost"}
+        except Exception as e:
+            return {"lineas": ["(no se pudo leer journalctl mmdvmhost: %s)" % str(e)[:120]], "path": "journalctl -u mmdvmhost"}
     paths = {"asterisk": "/var/log/asterisk/messages", "api": "/opt/zetronpoc/logs/api.log",
              "cola": "/opt/zetronpoc/logs/cola.log", "install": "/var/log/zetronpoc-install.log",
              "scheduler": "/opt/zetronpoc/logs/scheduler.log"}
