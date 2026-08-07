@@ -145,6 +145,7 @@ pre{background:rgba(4,6,13,.95);border:1px solid var(--line);border-radius:10px;
     <div class="tab" id="t-enviar"><div class="card"><h2>⇪ Despacho de mensaje</h2>
       <div><label>Destinatario (nombre, codigo o area)</label>
       <div style="position:relative"><input id="s_q" autocomplete="off" placeholder="Buscar destinatario..."><ul id="s_list" style="position:absolute;z-index:6;left:0;right:0;margin-top:.2rem;background:var(--bg2);border:1px solid var(--line);border-radius:10px;max-height:280px;overflow:auto;list-style:none;padding:.3rem;display:none"></ul></div></div>
+      <div style="margin-top:.8rem"><label>Plantilla</label><select id="s_tpl" onchange="usarPlantilla()"><option value="">— Cargar plantilla —</option></select></div>
       <div style="margin-top:.8rem"><label>Mensaje</label><textarea id="s_msg" rows="3" placeholder="Mensaje alfanumerico..."></textarea></div>
       <button class="btn btn-pri" onclick="sendMsg()"> Transmitir</button><div id="s_res" class="toast"></div></div></div>
 
@@ -187,7 +188,7 @@ pre{background:rgba(4,6,13,.95);border:1px solid var(--line);border-radius:10px;
       <div class="row"><div><label>Email backups</label><input id="c_backup_email"></div></div>
       <div class="sec-title">📡 MMDVM (placa serial — sin .wav)</div>
       <div class="hint">La placa MMDVM se conecta por USB-TTL (CP2102/FTDI/CH340) o al GPIO de la Raspberry. Al pulsar <b>Aplicar</b> se regenera el <b>MMDVM.ini</b> y se reinicia <b>mmdvmhost</b>. El encoder inyecta POCSAG por Remote Control (sin DAPNET, sin audio .wav).</div>
-      <div class="row"><div><label>Callsign</label><input id="c_mmdvm_callsign"></div><div><label>Puerto serie</label><input id="c_mmdvm_serial_port" placeholder="/dev/ttyUSB0"></div></div>
+      <div class="row"><div><label>Callsign</label><input id="c_mmdvm_callsign"></div><div><label>Puerto serie</label><input id="c_mmdvm_serial_port" list="serialPorts" placeholder="/dev/ttyUSB0"><datalist id="serialPorts"><option value="/dev/ttyUSB0"><option value="/dev/ttyUSB1"><option value="/dev/ttyS0"><option value="/dev/ttyS1"><option value="/dev/ttyAMA0"><option value="/dev/ttyACM0"></datalist></div></div>
       <div class="row"><div><label>Baudios host↔modem</label><input id="c_mmdvm_baud" type="number" value="115200"></div><div><label>Frecuencia (MHz)</label><input id="c_mmdvm_frequency" placeholder="433.800"></div></div>
       <div class="row"><div><label>Duplex</label><select id="c_mmdvm_duplex"><option value="0">Simplex</option><option value="1">Duplex</option></select></div><div><label>POCSAG baudios</label><select id="c_mmdvm_pocsag_baud"><option value="512">512</option><option value="1200">1200</option><option value="2400">2400</option></select></div></div>
       <div class="row"><div><label>TX Invert</label><select id="c_mmdvm_tx_invert"><option value="1">Si</option><option value="0">No</option></select></div><div><label>Nivel TX (0-100)</label><input id="c_mmdvm_tx_level" type="number" min="0" max="100" value="50"></div></div>
@@ -308,7 +309,8 @@ async function checkTok(){if(!TOKEN)return;try{await api('GET','/api/extensions'
 
 // Enviar
 let sChosen=null,sTimer=null,sInit=false;
-function initSend(){if(sInit)return;sInit=true;const sq=document.getElementById('s_q');sq.addEventListener('input',()=>{clearTimeout(sTimer);sTimer=setTimeout(async()=>renderSList(await buscarDest(sq.value.trim())),180);});}
+function initSend(){if(sInit)return;sInit=true;const sq=document.getElementById('s_q');sq.addEventListener('input',()=>{clearTimeout(sTimer);sTimer=setTimeout(async()=>renderSList(await buscarDest(sq.value.trim())),180);});api('GET','/api/plantillas').then(function(r){window.sPlantillas=(r||[]).filter(function(x){return x.activo;});const s=document.getElementById('s_tpl');if(s){s.innerHTML='<option value="">— Cargar plantilla —</option>'+window.sPlantillas.map(function(x){return '<option value="'+x.id+'">'+(x.nombre||'plantilla')+'</option>';}).join('');}}).catch(function(){});}
+function usarPlantilla(){const s=document.getElementById('s_tpl');if(s&&s.value){const p=(window.sPlantillas||[]).find(function(x){return String(x.id)===s.value;});if(p)document.getElementById('s_msg').value=p.mensaje||'';}}
 async function buscarDest(q){const [pe,gr]=await Promise.all([api('GET','/api/pagers'+(q?('?q='+encodeURIComponent(q)):'')),api('GET','/api/grupos'+(q?('?q='+encodeURIComponent(q)):''))]);const out=[];(pe||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:((x.nombre||'')+' '+(x.apellido||'')).trim()||x.codigo,tipo:'pager'}));(gr||[]).filter(x=>x.activo).forEach(x=>out.push({codigo:x.codigo,label:x.nombre||x.codigo,tipo:'grupo'}));return out;}
 function renderSList(r){const ul=document.getElementById('s_list');ul.innerHTML=r.map(x=>`<li onclick="pickS('${x.codigo}','${(x.label||'').replace(/'/g,'')}')" style="padding:.5rem .6rem;border-radius:7px;cursor:pointer;display:flex;justify-content:space-between"><span>${x.label} <span style="color:var(--mut);font-size:.78rem">${x.codigo}</span></span><span style="font-size:.66rem;color:var(--acc);font-weight:700">${x.tipo}</span></li>`).join('');ul.style.display=r.length?'block':'none';}
 function pickS(c,l){sChosen=c;document.getElementById('s_q').value=l+' ('+c+')';document.getElementById('s_list').style.display='none';}
