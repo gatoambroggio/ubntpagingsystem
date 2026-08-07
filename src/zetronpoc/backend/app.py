@@ -284,6 +284,22 @@ def diagnose():
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
+    def _safe(self, fn):
+        try:
+            return fn()
+        except BrokenPipeError:
+            pass
+        except Exception as e:
+            try: evlog(self, "error", "api", "%s %s: %s" % (self.command, self.path, str(e)[:200]))
+            except: pass
+            try: return jok(self, {"error": "error interno: %s" % str(e)[:200]}, 500)
+            except: pass
+
+    def do_GET(self): return self._safe(self._do_GET_impl)
+    def do_POST(self): return self._safe(self._do_POST_impl)
+    def do_PUT(self): return self._safe(self._do_PUT_impl)
+    def do_DELETE(self): return self._safe(self._do_DELETE_impl)
+
     def _body(self):
         n = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(n) if n else b""
@@ -292,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
         try: return json.loads(self._body() or "{}")
         except Exception: return {}
 
-    def do_GET(self):
+    def _do_GET_impl(self):
         u = urllib.parse.urlparse(self.path); p = u.path; q = urllib.parse.parse_qs(u.query)
         # estaticos
         if p == "/" or p == "/index.html": return serve_file(self, os.path.join(FRONT, "index.html"), "text/html; charset=utf-8")
@@ -318,7 +334,11 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/plantillas": return jok(self, db.listar_plantillas())
         if p == "/api/programados": return jok(self, db.listar_programados())
         if p == "/api/auditoria": return jok(self, db.listar_auditoria(int(q.get("limit", ["200"])[0])))
-        if p == "/api/stats": return jok(self, db.estadisticas())
+        if p == "/api/stats":
+            try: return jok(self, db.estadisticas())
+            except Exception as e:
+                evlog(self, "error", "api", "stats: %s" % str(e)[:200])
+                return jok(self, {"por_dia": [], "por_hora": [], "top_pagers": [], "total_enviados": 0, "total_ok": 0, "total_err": 0, "cola": {}})
         if p == "/api/cola": return jok(self, db.listar_cola(q.get("estado", [None])[0], int(q.get("limit", ["200"])[0])))
         if p == "/api/cola/estado": return jok(self, db.estado_cola())
         if p == "/api/logs": return jok(self, db.leer_logs(q.get("tipo", ["api"])[0], int(q.get("limit", ["300"])[0])))
@@ -342,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/pbx/diagnose": return jok(self, diagnose())
         return jtext(self, "no encontrado", 404)
 
-    def do_POST(self):
+    def _do_POST_impl(self):
         u = urllib.parse.urlparse(self.path); p = u.path
         if p == "/api/login":
             d = self._json()
@@ -461,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
             return jok(self, aplicar_mmdvm(d))
         return jtext(self, "no encontrado", 404)
 
-    def do_PUT(self):
+    def _do_PUT_impl(self):
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         u = urllib.parse.urlparse(self.path); p = u.path; d = self._json()
         if p == "/api/config":
@@ -484,7 +504,7 @@ class Handler(BaseHTTPRequestHandler):
         if m: db.actualizar_programado(int(m.group(1)), d); return jok(self, {"ok": True})
         return jtext(self, "no encontrado", 404)
 
-    def do_DELETE(self):
+    def _do_DELETE_impl(self):
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         p = urllib.parse.urlparse(self.path).path
         m = re.match(r'/api/extensions/(\d+)$', p)
