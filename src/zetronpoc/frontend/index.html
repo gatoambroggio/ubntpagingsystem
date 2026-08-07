@@ -44,6 +44,7 @@ li:hover{background:rgba(0,240,255,.1)}
     <input id="q" autocomplete="off" placeholder="Nombre, codigo o area...">
     <ul id="list" style="display:none"></ul>
     <div style="margin-top:1rem"><label>Mensaje alfanumerico</label><textarea id="msg" rows="3" placeholder="Escriba el mensaje al pager..."></textarea></div>
+    <div id="tpl" style="margin-top:.6rem"></div>
     <button class="btn" onclick="send()">TRANSMITIR</button>
     <div id="res" class="toast"></div>
   </div>
@@ -79,6 +80,8 @@ document.addEventListener('click',e=>{if(e.target.id!=='q')list.style.display='n
 function pick(c,l){chosen=c;q.value=l+' ('+c+')';list.style.display='none';}
 async function send(){const t=document.getElementById('res');if(!chosen){t.className='toast show err';t.textContent='Seleccione destinatario';return;}const m=document.getElementById('msg').value.trim();if(!m){t.className='toast show err';t.textContent='Escriba un mensaje';return;}t.className='toast show ok';t.textContent='Transmitiendo...';const r=await fetch('/api/enviar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigo:chosen,mensaje:m,origen:'publico'})}).then(r=>r.json());if(r.status==='enviado'||r.status==='encolado'){t.className='toast show ok';t.textContent=r.status==='encolado'?'Encolado para envio.':'Mensaje transmitido.';document.getElementById('msg').value='';}else{t.className='toast show err';t.textContent='Error: '+(r.detalle||'fallo');}}
 async function health(){try{const h=await fetch('/api/health').then(r=>r.json());const p=document.getElementById('h');p.textContent=h.status==='ok'?'EN LINEA':'CAIDO';p.className='pill '+(h.status==='ok'?'':'off');}catch(e){}}
-health();setInterval(health,20000);
+async function loadPlantillas(){try{const r=await fetch('/api/plantillas/public').then(r=>r.json());const t=document.getElementById('tpl');if(!r||!r.length){t.innerHTML='';return;}t.innerHTML='<label style="font-size:.66rem;color:var(--mut);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:.3rem">Plantillas</label><div style="display:flex;flex-wrap:wrap;gap:.4rem">'+r.map(p=>'<button type="button" onclick="useTpl(this)" data-msg="'+String(p.mensaje||'').replace(/"/g,'&quot;')+'" style="cursor:pointer;border:1px solid var(--line);background:rgba(15,20,40,.7);color:#d8e6ff;border-radius:8px;padding:.4rem .7rem;font-size:.8rem;font-family:Rajdhani,sans-serif">'+p.nombre+'</button>').join('')+'</div>';}catch(e){}}
+function useTpl(b){document.getElementById('msg').value=b.getAttribute('data-msg');}
+health();setInterval(health,20000);loadPlantillas();
 </script>
 </body></html>
