@@ -74,9 +74,14 @@ if [[ ! -d "${MMDVMHOST_SRC}/.git" ]]; then
   rm -rf "${MMDVMHOST_SRC}"
   git clone --depth 1 https://github.com/g4klx/MMDVMHost "${MMDVMHOST_SRC}" || { err "No se pudo clonar MMDVMHost"; exit 1; }
 fi
-( cd "${MMDVMHOST_SRC}" && make clean && make -j"$(nproc)" )
-install -m 0755 "${MMDVMHOST_SRC}/MMDVMHost" /usr/local/bin/MMDVMHost
-log "MMDVMHost compilado e instalado"
+( cd "${MMDVMHOST_SRC}" && make clean && make -j"$(nproc)" ) || {
+  warn "Compilacion fallo. Re-clonando limpio y reintentando..."
+  rm -rf "${MMDVMHOST_SRC}"
+  git clone --depth 1 https://github.com/g4klx/MMDVMHost "${MMDVMHOST_SRC}" || { err "No se pudo clonar MMDVMHost"; exit 1; }
+  ( cd "${MMDVMHOST_SRC}" && make -j"$(nproc)" ) || { err "No se pudo compilar MMDVMHost (revisar dependencias)"; exit 1; }
+}
+install -m 0755 "${MMDVMHOST_SRC}/MMDVM-Host" /usr/local/bin/MMDVM-Host
+log "MMDVMHost compilado e instalado en /usr/local/bin/MMDVM-Host"
 
 note "3/8 Generando MMDVM.ini..."
 mkdir -p "${MMDVM_DIR}"
@@ -154,7 +159,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/MMDVMHost ${MMDVM_INI}
+ExecStart=/usr/local/bin/MMDVM-Host ${MMDVM_INI}
 Restart=always
 RestartSec=3
 User=root
