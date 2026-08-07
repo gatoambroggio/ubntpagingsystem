@@ -5,7 +5,7 @@ Toda la configuracion (PBX, encoder Zetron 640, transmisor DaptX-Xtra, IVR,
 GPIO, SMTP, tema) vive en la tabla config (clave/valor).
 generar_pjsip_conf() produce un pjsip.conf SELF-CONTAINED (sin includes).
 """
-import sqlite3, os, secrets, time, datetime, subprocess, sys
+import sqlite3, os, secrets, time, datetime, subprocess, sys, fcntl
 from contextlib import contextmanager
 
 DEFAULT_DB = "/opt/zetronpoc/database/zetronpoc.db"
@@ -289,6 +289,8 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     caps, baudios, tipo = dest
     cap_list = [c2.strip() for c2 in str(caps).split(",") if c2.strip()] or [""]
     qid = encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path)
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE cola_envios SET estado='enviando' WHERE id=?", (qid,))
     # Procesar en caliente: transmite y registra bitacora ahora (no depende del worker).
     handler = "/var/lib/asterisk/agi-bin/pocsag_handler.py"
     if not os.path.exists(handler):
@@ -296,6 +298,8 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
     obs = ""
     rc_ok = False
+    _lf = open(os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm.lock"), "w")
+    fcntl.flock(_lf, fcntl.LOCK_EX)
     try:
         rc = subprocess.run([sys.executable, handler, origen or "web", codigo, mensaje],
                             capture_output=True, text=True, timeout=60, env=env)
@@ -304,6 +308,9 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
             obs = (rc.stderr or rc.stdout or "fallo").strip()[:200]
     except Exception as e:
         obs = str(e)[:200]
+    finally:
+        fcntl.flock(_lf, fcntl.LOCK_UN)
+        _lf.close()
     estado = "enviado" if rc_ok else "error"
     with get_conn(db_path) as conn:
         rows = conn.execute("SELECT estado FROM bitacora WHERE codigo=? AND mensaje=? ORDER BY id DESC LIMIT ?",
@@ -363,6 +370,8 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         conn.execute("UPDATE cola_envios SET estado='enviando', intentos=intentos+1 WHERE id=?", (row["id"],))
         conn.commit()
     item = dict(row)
+    _lf = open(os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm.lock"), "w")
+    fcntl.flock(_lf, fcntl.LOCK_EX)
     try:
         env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
         rc = subprocess.run([sys.executable, handler, item["origen"] or "cola", item["codigo"], item["mensaje"]],
@@ -371,6 +380,9 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         obs = "" if ok else (rc.stderr or rc.stdout or "fallo").strip()[:200]
     except Exception as e:
         ok = False; obs = str(e)[:200]
+    finally:
+        fcntl.flock(_lf, fcntl.LOCK_UN)
+        _lf.close()
     with get_conn(db_path) as conn:
         if ok:
             conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=datetime('now','localtime'), "
@@ -536,6 +548,17 @@ def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
                 return ((r.stdout or "") + (("\n" + r.stderr) if (r.stderr and not r.stdout) else "")).strip()
             except Exception as e:
                 return "(error: %s)" % str(e)[:120]
+        out.append("=== Historial de aplicaciones MMDVM (con hora) ===")
+        try:
+            mlog = os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "logs", "mmdvm.log")
+            if os.path.exists(mlog):
+                with open(mlog, "r", errors="replace") as f:
+                    out.append("".join(f.readlines()[-50:]).rstrip() or "(vacio)")
+            else:
+                out.append("(sin aplicaciones registradas aun)")
+        except Exception as e:
+            out.append("(error leyendo mmdvm.log: %s)" % str(e)[:120])
+        out.append("")
         out.append("=== systemctl status mmdvmhost ===")
         out.append(_run(["systemctl", "status", "mmdvmhost", "--no-pager", "-n", "20"]) or "(sin salida)")
         out.append("")
