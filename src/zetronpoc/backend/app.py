@@ -136,6 +136,7 @@ def aplicar_mmdvm(d=None):
                     restart_ok, (detail or "ok")[:200]))
         except Exception:
             pass
+        db.registrar_log("info" if restart_ok else "error", "api", "mmdvm/apply restart=%s" % restart_ok)
         return {"ok": restart_ok, "path": MMDVM_INI, "restart": restart_ok,
                 "stderr": detail[:500], "status": status_txt}
     except Exception as e:
@@ -346,10 +347,12 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/login":
             d = self._json()
             tok = db.login_validar(d.get("user", ""), d.get("pass", ""))
+            db.registrar_log("info" if tok else "warn", "api", "login user=%s %s" % (d.get("user",""), "ok" if tok else "fail"))
             if tok: return jok(self, {"token": tok})
             return jok(self, {"error": "credenciales invalidas"}, 401)
         if p == "/api/enviar":
             d = self._json()
+            db.registrar_log("info", "api", "enviar codigo=%s origen=%s" % (d.get("codigo"), d.get("origen","web")))
             return jok(self, db.enviar_mensaje(d.get("codigo"), d.get("mensaje"), d.get("origen", "web")))
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         d = self._json()
@@ -357,6 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             return jok(self, {"id": db.crear_extension(d)})
         if p == "/api/extensions/aplicar":
             ok, msg = db.generar_pjsip_conf()
+            db.registrar_log("info" if ok else "error", "api", "extensions/aplicar: %s" % msg)
             if ok:
                 reload_out = ""
                 need_restart = False
@@ -430,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
             r = pbx_run("pjsip unregister")
             return jok(self, {"salida": r.get("salida", "ok")})
         if p == "/api/pbx/run":
+            db.registrar_log("info", "api", "pbx run: %s" % d.get("cmd",""))
             return jok(self, pbx_run(d.get("cmd", "")))
         if p == "/api/db/backup-email":
             bf = db.backup_db()
@@ -453,6 +458,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path); p = u.path; d = self._json()
         if p == "/api/config":
             for k, v in d.items(): db.set_config(k, str(v))
+            db.registrar_log("info", "api", "config actualizada (%d claves)" % len(d))
             return jok(self, {"ok": True})
         if p == "/api/mmdvm":
             return jok(self, aplicar_mmdvm(d))
