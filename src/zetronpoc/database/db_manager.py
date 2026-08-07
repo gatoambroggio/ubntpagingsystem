@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 db_manager.py - ZetronPOC v2.0 - Gestor de base de datos y configuracion.
-Toda la configuracion (PBX, encoder Zetron 640, transmisor DaptX-Xtra, IVR,
-GPIO, SMTP, tema) vive en la tabla config (clave/valor).
-generar_pjsip_conf() produce un pjsip.conf SELF-CONTAINED (sin includes).
+Toda la configuracion (PBX, modulo MMDVM, IVR, GPIO, SMTP, tema) vive en la
+tabla config (clave/valor). generar_pjsip_conf() produce un pjsip.conf
+SELF-CONTAINED (sin includes). generar_mmdvm_ini() produce el MMDVM.ini.
 """
-import sqlite3, os, secrets, time, datetime, subprocess, sys, fcntl
+import sqlite3, os, secrets, time, datetime, subprocess, sys
 from contextlib import contextmanager
 
 DEFAULT_DB = "/opt/zetronpoc/database/zetronpoc.db"
@@ -63,7 +63,7 @@ def crear_pager(data, db_path=DEFAULT_DB):
             "INSERT INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,funcion,descripcion,activo) "
             "VALUES (?,?,?,?,?,?,?,?,1)",
             (data["codigo"], data["cap_code"], data.get("nombre"), data.get("apellido"),
-             data.get("area"), data.get("baudios", 512), data.get("funcion", "alphanumeric"),
+             data.get("area"), data.get("baudios", 1200), data.get("funcion", "alphanumeric"),
              data.get("descripcion")))
         return cur.lastrowid
 
@@ -73,7 +73,7 @@ def actualizar_pager(pid, data, db_path=DEFAULT_DB):
             "UPDATE pagers SET codigo=?,cap_code=?,nombre=?,apellido=?,area=?,baudios=?,"
             "funcion=?,descripcion=?,activo=? WHERE id=?",
             (data["codigo"], data["cap_code"], data.get("nombre"), data.get("apellido"),
-             data.get("area"), data.get("baudios", 512), data.get("funcion", "alphanumeric"),
+             data.get("area"), data.get("baudios", 1200), data.get("funcion", "alphanumeric"),
              data.get("descripcion"), int(data.get("activo", 1)), pid))
 
 def toggle_pager(pid, activo, db_path=DEFAULT_DB):
@@ -88,8 +88,8 @@ def importar_pagers(rows, db_path=DEFAULT_DB):
     n = 0; errores = 0
     with get_conn(db_path) as conn:
         for r in rows:
-            try: baud = int(r.get("baudios") or 512)
-            except (ValueError, TypeError): baud = 512
+            try: baud = int(r.get("baudios") or 1200)
+            except (ValueError, TypeError): baud = 1200
             try:
                 conn.execute(
                     "INSERT INTO pagers (codigo,cap_code,nombre,apellido,area,baudios,funcion,descripcion,activo) "
@@ -130,7 +130,7 @@ def crear_grupo(data, db_path=DEFAULT_DB):
     caps = data.get("miembros", [])[:20]
     with get_conn(db_path) as conn:
         cur = conn.execute("INSERT INTO grupos (codigo,nombre,baudios,activo) VALUES (?,?,?,1)",
-                           (data["codigo"], data.get("nombre"), data.get("baudios", 512)))
+                           (data["codigo"], data.get("nombre"), data.get("baudios", 1200)))
         gid = cur.lastrowid
         for i, c in enumerate(caps):
             conn.execute("INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES (?,?,?)", (gid, c, i))
@@ -140,7 +140,7 @@ def actualizar_grupo(gid, data, db_path=DEFAULT_DB):
     caps = data.get("miembros", [])[:20]
     with get_conn(db_path) as conn:
         conn.execute("UPDATE grupos SET codigo=?,nombre=?,baudios=? WHERE id=?",
-                     (data["codigo"], data.get("nombre"), data.get("baudios", 512), gid))
+                     (data["codigo"], data.get("nombre"), data.get("baudios", 1200), gid))
         conn.execute("DELETE FROM grupo_miembros WHERE grupo_id=?", (gid,))
         for i, c in enumerate(caps):
             conn.execute("INSERT OR IGNORE INTO grupo_miembros (grupo_id,cap_code,orden) VALUES (?,?,?)", (gid, c, i))
@@ -153,8 +153,8 @@ def importar_grupos(rows, db_path=DEFAULT_DB):
     n = 0; errores = 0
     with get_conn(db_path) as conn:
         for r in rows:
-            try: baud = int(r.get("baudios") or 512)
-            except (ValueError, TypeError): baud = 512
+            try: baud = int(r.get("baudios") or 1200)
+            except (ValueError, TypeError): baud = 1200
             caps = [c.strip() for c in str(r.get("cap_codes", "")).split(",") if c.strip()][:20]
             codigo = r.get("codigo", "")
             if not codigo or not caps: continue
@@ -207,13 +207,9 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
         if not (e.get("password") or "").strip():
             return False, "La extension %s no tiene clave" % e["numero"]
 
-    # Sanitizar bind: PJSIP usa IP:PORT (dos puntos). Si el admin puso IP/PORT (barra)
-    # o pegó la IP remota del hospital, corregir a un bind local valido (0.0.0.0:5060).
-    # El bind del transporte es LOCAL: siempre 0.0.0.0:5060 para un cliente que se
-    # registra hacia la central. No configurable (setear la IP del hospital rompe el transporte).
-    transport_bind = "0.0.0.0:5060"
-    transport_proto = (cfg.get("transport_protocol") or "udp").strip() or "udp"
-    codecs = (cfg.get("codecs") or "ulaw,alaw").strip() or "ulaw,alaw"
+    transport_bind = cfg.get("transport_bind", "0.0.0.0:5060")
+    transport_proto = cfg.get("transport_protocol", "udp")
+    codecs = cfg.get("codecs", "ulaw,alaw")
     retry_interval = cfg.get("retry_interval", "60")
     expiration = cfg.get("expiration", "3600")
     pbx_port = (cfg.get("hospital_pbx_port", "5060") or "5060").strip()
@@ -243,8 +239,7 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
             "[reg-%s]" % num, "type=registration", "transport=transport-udp",
             "outbound_auth=auth-%s" % num, "server_uri=sip:%s" % sip_target,
             "client_uri=sip:%s@%s" % (num, sip_target), "retry_interval=%s" % retry_interval,
-            "expiration=%s" % expiration, "contact_user=%s" % num,
-            "line=yes", "endpoint=%s" % num, "",
+            "expiration=%s" % expiration, "contact_user=%s" % num, "",
             "[auth-%s]" % num, "type=auth", "auth_type=userpass",
             "username=%s" % num, "password=%s" % pw, "",
         ]
@@ -254,6 +249,79 @@ def generar_pjsip_conf(db_path=DEFAULT_DB):
         return True, "Generado: %d endpoint(s) contra %s" % (len(activos), ip)
     except PermissionError:
         return False, "Sin permisos para escribir pjsip_zetronpoc.conf"
+
+# ===================== MMDVM =====================
+MMDVM_INI = os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm", "MMDVM.ini")
+
+def generar_mmdvm_ini(db_path=DEFAULT_DB):
+    cfg = all_config(db_path)
+    def g(k, d=""):
+        return (cfg.get(k) or d).strip()
+    callsign = g("mmdvm_callsign", "LU1ABC")
+    port = g("mmdvm_serial_port", "/dev/ttyUSB0")
+    baud = g("mmdvm_baud", "115200")
+    freq = g("mmdvm_frequency", "433.800")
+    pocsag_baud = g("mmdvm_pocsag_baud", "1200")
+    duplex = g("mmdvm_duplex", "0")
+    tx_invert = g("mmdvm_tx_invert", "1")
+    tx_level = g("mmdvm_tx_level", "50")
+    tx_offset = g("mmdvm_tx_offset", "0")
+    ptt_delay = g("mmdvm_ptt_delay", "100")
+    display = g("mmdvm_display", "None")
+    enable_pocsag = "1" if g("mmdvm_enable_pocsag", "1") == "1" else "0"
+    dapnet_enable = "1" if g("mmdvm_dapnet_enable", "0") == "1" else "0"
+    dapnet_address = g("mmdvm_dapnet_address", "")
+    dapnet_passcode = g("mmdvm_dapnet_passcode", "")
+    ini = (
+        "# MMDVM.ini - generado por ZetronPOC / MediGuard OS\n"
+        "# Modulo MMDVM por puerto serie (sin .wav)\n\n"
+        "[General]\n"
+        "Callsign=%s\n"
+        "Id=%s000\n"
+        "Timeout=180\n"
+        "Duplex=%s\n"
+        "RFModeHang=10\n"
+        "DMR=0\nDSTAR=0\nYSF=0\nP25=0\nNXDN=0\n"
+        "POCSAG=%s\n"
+        "Display=%s\n\n"
+        "[Modem]\n"
+        "Port=%s\n"
+        "BaudeRate=%s\n"
+        "TXInvert=%s\n"
+        "RXInvert=0\n"
+        "PTTInvert=0\n"
+        "TXDelay=%s\n"
+        "RXLevel=50\n"
+        "POCSAGTXLevel=%s\n"
+        "TXOffset=%s\n"
+        "RXOffset=%s\n"
+        "RSSIMapping=0:0,100:100\n"
+        "UseCOSAsLockout=0\n\n"
+        "[POCSAG]\n"
+        "Enable=%s\n"
+        "Callsign=%s\n\n"
+        "[RemoteControl]\n"
+        "Enable=1\n"
+        "Port=%s\n\n"
+        "[DAPNET]\n"
+        "Enable=%s\n"
+        "Address=%s\n"
+        "Passcode=%s\n\n"
+        "[Info]\nEnabled=0\n\n"
+        "[Log]\nDisplayLevel=1\nFileLevel=1\nFilePath=/var/log/mmdvm\nFileRoot=MMDVM\n"
+    ) % (callsign, callsign.replace(" ", ""), duplex, enable_pocsag, display,
+         port, baud, tx_invert, ptt_delay, tx_level, tx_offset, tx_offset,
+         enable_pocsag, callsign, (cfg.get("mmdvm_remote_port", "7642") or "7642").strip() or "7642",
+         dapnet_enable, dapnet_address, dapnet_passcode)
+    try:
+        os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
+        with open(MMDVM_INI, "w") as f:
+            f.write(ini)
+        return True, "MMDVM.ini generado en %s (frec=%s MHz, baud=%s, puerto=%s)" % (MMDVM_INI, freq, pocsag_baud, port)
+    except PermissionError:
+        return False, "sin permisos para escribir %s (ejecute el servicio como root)" % MMDVM_INI
+    except Exception as e:
+        return False, str(e)
 
 # ===================== DESTINO / ENVIO =====================
 def resolver_destino(codigo, db_path=DEFAULT_DB):
@@ -268,13 +336,34 @@ def resolver_destino(codigo, db_path=DEFAULT_DB):
             return (caps, grow["baudios"], "grupo")
         return None
 
-def registrar_bitacora(interno, codigo, cap_code, mensaje, baudios, estado, obs="", db_path=DEFAULT_DB):
+def registrar_bitacora(interno, codigo, cap_code, mensaje, baudios, estado, obs="", cola_id=None, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
         conn.execute(
-            "INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones,cola_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), interno, codigo, cap_code, mensaje,
-             baudios, estado, obs))
+             baudios, estado, obs, cola_id))
+
+def registrar_envio_encolado(qid, codigo, caps, mensaje, baudios, origen, db_path=DEFAULT_DB):
+    """Registra en bitacora (estado='encolado') al encolar, para que el
+    mensaje figure en el historial aun si el worker tarda o no esta corriendo."""
+    cap_list = [c.strip() for c in str(caps or "").split(",") if c.strip()] or [""]
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn(db_path) as conn:
+        for cap in cap_list:
+            conn.execute(
+                "INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones,cola_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (ts, origen, codigo, cap, mensaje, baudios, "encolado", "", qid))
+
+def actualizar_bitacora_envio(qid, cap, estado, obs="", db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE bitacora SET estado=?, observaciones=? WHERE cola_id=? AND cap_code=?",
+                     (estado, obs, qid, cap))
+
+def marcar_bitacora_error(qid, obs, db_path=DEFAULT_DB):
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE bitacora SET estado='error', observaciones=? WHERE cola_id=?", (obs, qid))
 
 # ===================== COLA =====================
 def encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path=DEFAULT_DB):
@@ -292,52 +381,9 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     if not dest:
         return {"status": "error", "detalle": "codigo inactivo o inexistente"}
     caps, baudios, tipo = dest
-    cap_list = [c2.strip() for c2 in str(caps).split(",") if c2.strip()] or [""]
     qid = encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path)
-    with get_conn(db_path) as conn:
-        conn.execute("UPDATE cola_envios SET estado='enviando' WHERE id=?", (qid,))
-    # Procesar en caliente: transmite y registra bitacora ahora (no depende del worker).
-    handler = "/var/lib/asterisk/agi-bin/pocsag_handler.py"
-    if not os.path.exists(handler):
-        handler = os.path.join(os.path.dirname(__file__), "..", "agi", "pocsag_handler.py")
-    env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
-    obs = ""
-    rc_ok = False
-    _lf = open(os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm.lock"), "w")
-    fcntl.flock(_lf, fcntl.LOCK_EX)
-    try:
-        rc = subprocess.run([sys.executable, handler, origen or "web", codigo, mensaje],
-                            capture_output=True, text=True, timeout=60, env=env)
-        rc_ok = rc.returncode == 0
-        if not rc_ok:
-            obs = (rc.stderr or rc.stdout or "fallo").strip()[:200]
-    except Exception as e:
-        obs = str(e)[:200]
-    finally:
-        fcntl.flock(_lf, fcntl.LOCK_UN)
-        _lf.close()
-    estado = "enviado" if rc_ok else "error"
-    with get_conn(db_path) as conn:
-        rows = conn.execute("SELECT estado FROM bitacora WHERE codigo=? AND mensaje=? ORDER BY id DESC LIMIT ?",
-                            (codigo, mensaje, len(cap_list))).fetchall()
-        if rows:
-            estados = [r["estado"] for r in rows]
-            if all(e == "enviado" for e in estados):
-                estado = "enviado"
-            elif any(e == "error" for e in estados):
-                estado = "error"
-        else:
-            # el handler no registro bitacora: registrar a mano para que figure en historial
-            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for cap in cap_list:
-                conn.execute(
-                    "INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (ts, origen, codigo, cap, mensaje, baudios, estado, obs or "fallo handler"))
-        conn.execute("UPDATE cola_envios SET estado=?, fecha_procesado=datetime('now','localtime'), observaciones=? WHERE id=?",
-                     (estado, obs, qid))
-    return {"status": estado, "detalle": "envio procesado" if estado == "enviado" else ("error: " + obs if obs else "sin confirmar"),
-            "id": qid, "observaciones": obs}
+    registrar_envio_encolado(qid, codigo, caps, mensaje, baudios, origen, db_path)
+    return {"status": "encolado", "detalle": "mensaje encolado (id=%d)" % qid, "id": qid}
 
 def listar_cola(estado=None, limit=200, db_path=DEFAULT_DB):
     with get_conn(db_path) as conn:
@@ -375,19 +421,14 @@ def procesar_siguiente_cola(db_path=DEFAULT_DB):
         conn.execute("UPDATE cola_envios SET estado='enviando', intentos=intentos+1 WHERE id=?", (row["id"],))
         conn.commit()
     item = dict(row)
-    _lf = open(os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm.lock"), "w")
-    fcntl.flock(_lf, fcntl.LOCK_EX)
     try:
         env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
-        rc = subprocess.run([sys.executable, handler, item["origen"] or "cola", item["codigo"], item["mensaje"]],
+        rc = subprocess.run([sys.executable, handler, item["origen"] or "cola", item["codigo"], item["mensaje"], str(item["id"])],
                             capture_output=True, text=True, timeout=120, env=env)
         ok = rc.returncode == 0
         obs = "" if ok else (rc.stderr or rc.stdout or "fallo").strip()[:200]
     except Exception as e:
         ok = False; obs = str(e)[:200]
-    finally:
-        fcntl.flock(_lf, fcntl.LOCK_UN)
-        _lf.close()
     with get_conn(db_path) as conn:
         if ok:
             conn.execute("UPDATE cola_envios SET estado='enviado', fecha_procesado=datetime('now','localtime'), "
@@ -491,7 +532,7 @@ def procesar_programados(db_path=DEFAULT_DB):
         rows = conn.execute("SELECT * FROM envios_programados WHERE activo=1 AND proxima_ejecucion<=? ORDER BY proxima_ejecucion", (now,)).fetchall()
     for r in rows:
         r = dict(r)
-        qid = encolar_mensaje(r["codigo"], None, r["mensaje"], 512, r["origen"] or "programado", db_path)
+        qid = encolar_mensaje(r["codigo"], None, r["mensaje"], 1200, r["origen"] or "programado", db_path)
         dest = resolver_destino(r["codigo"], db_path)
         if dest:
             with get_conn(db_path) as conn:
@@ -544,80 +585,7 @@ def estadisticas(db_path=DEFAULT_DB):
     return {"por_dia": por_dia, "por_hora": por_hora, "top_pagers": top_pagers,
             "total_enviados": total_env, "total_ok": total_ok, "total_err": total_err, "cola": estado_cola(db_path)}
 
-def registrar_log(nivel, origen, mensaje, db_path=DEFAULT_DB):
-    try:
-        with get_conn(db_path) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, nivel TEXT, origen TEXT, mensaje TEXT)")
-            conn.execute("INSERT INTO logs(fecha_hora,nivel,origen,mensaje) VALUES(?,?,?,?)",
-                (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), (nivel or "info")[:20], (origen or "api")[:20], str(mensaje)[:2000]))
-    except Exception:
-        pass
-
-def listar_logs(origen=None, limit=300, db_path=DEFAULT_DB):
-    try:
-        with get_conn(db_path) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha_hora TEXT, nivel TEXT, origen TEXT, mensaje TEXT)")
-            if origen:
-                rows = conn.execute("SELECT * FROM logs WHERE origen=? ORDER BY id DESC LIMIT ?", (origen, limit)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-            return [dict(r) for r in rows]
-    except Exception:
-        return []
-
 def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
-    if tipo == "mmdvm":
-        out = []
-        def _run(cmd, shell=False):
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, shell=shell)
-                return ((r.stdout or "") + (("\n" + r.stderr) if (r.stderr and not r.stdout) else "")).strip()
-            except Exception as e:
-                return "(error: %s)" % str(e)[:120]
-        out.append("=== Historial de aplicaciones MMDVM (con hora) ===")
-        try:
-            mlog = os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "logs", "mmdvm.log")
-            if os.path.exists(mlog):
-                with open(mlog, "r", errors="replace") as f:
-                    out.append("".join(f.readlines()[-50:]).rstrip() or "(vacio)")
-            else:
-                out.append("(sin aplicaciones registradas aun)")
-        except Exception as e:
-            out.append("(error leyendo mmdvm.log: %s)" % str(e)[:120])
-        out.append("")
-        out.append("=== systemctl status mmdvmhost ===")
-        out.append(_run(["systemctl", "status", "mmdvmhost", "--no-pager", "-n", "20"]) or "(sin salida)")
-        out.append("")
-        out.append("=== journalctl -u mmdvmhost (ultimas %s) ===" % limit)
-        out.append(_run(["journalctl", "-u", "mmdvmhost", "-n", str(int(limit)), "--no-pager"]) or "(sin logs)")
-        out.append("")
-        out.append("=== MMDVM.ini ===")
-        try:
-            ini_path = os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm", "MMDVM.ini")
-            if os.path.exists(ini_path):
-                with open(ini_path, "r", errors="replace") as f:
-                    out.append(f.read().strip())
-            else:
-                out.append("(MMDVM.ini no existe: %s)" % ini_path)
-        except Exception as e:
-            out.append("(error leyendo ini: %s)" % str(e)[:120])
-        out.append("")
-        out.append("=== Puertos serie detectados ===")
-        out.append(_run("ls -l /dev/ttyUSB* /dev/ttyAMA* /dev/serial/by-id/* 2>/dev/null", shell=True) or "(no se detectaron /dev/ttyUSB* ni /dev/ttyAMA*)")
-        out.append("")
-        out.append("=== Configuracion MMDVM ===")
-        try:
-            cfg = all_config(db_path)
-            for k in ("mmdvm_callsign", "mmdvm_serial_port", "mmdvm_baud", "mmdvm_frequency",
-                      "mmdvm_duplex", "mmdvm_pocsag_baud", "mmdvm_tx_invert", "mmdvm_tx_level",
-                      "mmdvm_rc_port", "mmdvm_display", "ptt_mode"):
-                out.append("%s = %s" % (k, cfg.get(k, "")))
-        except Exception as e:
-            out.append("(error config: %s)" % str(e)[:120])
-        return {"lineas": out, "path": "mmdvmhost: status + journal + ini + puertos + config"}
-    if tipo in ("api", "cola", "scheduler"):
-        rows = listar_logs(origen=tipo, limit=limit, db_path=db_path)
-        return {"lineas": ["%s [%s] %s" % (r["fecha_hora"], r.get("nivel") or "-", r.get("mensaje") or "") for r in rows], "path": "db:logs (origen=%s)" % tipo}
     paths = {"asterisk": "/var/log/asterisk/messages", "api": "/opt/zetronpoc/logs/api.log",
              "cola": "/opt/zetronpoc/logs/cola.log", "install": "/var/log/zetronpoc-install.log",
              "scheduler": "/opt/zetronpoc/logs/scheduler.log"}
