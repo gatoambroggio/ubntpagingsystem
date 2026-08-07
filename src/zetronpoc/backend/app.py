@@ -379,12 +379,19 @@ class Handler(BaseHTTPRequestHandler):
                         time.sleep(4)
                     except Exception:
                         pass
-                try:
-                    subprocess.run(["asterisk", "-rx", "pjsip send register *all"], capture_output=True, text=True, timeout=10)
-                except Exception:
-                    pass
+                # Registrar cada interno por nombre (determinista; "pjsip send register *all" no es estandar).
+                reg_log = []
+                for e in [x for x in db.listar_extensiones() if x["activo"]]:
+                    num = e["numero"]
+                    try:
+                        rr = subprocess.run(["asterisk", "-rx", "pjsip send register reg-%s" % num],
+                                            capture_output=True, text=True, timeout=10)
+                        reg_log.append("reg-%s: %s" % (num, ((rr.stdout or "") + (rr.stderr or "")).strip()))
+                    except Exception as ex:
+                        reg_log.append("reg-%s: excepcion %s" % (num, ex))
+                time.sleep(2)
                 st = ext_status()
-                return jok(self, {"ok": True, "salida": msg, "registraciones": st})
+                return jok(self, {"ok": True, "salida": msg, "registraciones": st, "log": "\n".join(reg_log)})
             return jok(self, {"ok": ok, "salida": msg})
         if p == "/api/pagers":
             return jok(self, {"id": db.crear_pager(d)})
