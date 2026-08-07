@@ -108,6 +108,15 @@ def aplicar_mmdvm(d=None):
         os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
         with open(MMDVM_INI, "w") as f:
             f.write(ini)
+        # detectar si MMDVMHost esta instalado antes de reiniciar el servicio
+        svc_exists = os.path.exists("/etc/systemd/system/mmdvmhost.service") or \
+                     os.path.islink("/etc/systemd/system/multi-user.target.wants/mmdvmhost.service")
+        bin_exists = os.path.exists("/usr/local/bin/MMDVMHost")
+        if not svc_exists or not bin_exists:
+            return {"ok": False, "no_instalado": True,
+                    "mensaje": "El servicio MMDVMHost no esta instalado en este servidor.",
+                    "instalar_cmd": "curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_mmdvm.sh | sudo bash",
+                    "path": MMDVM_INI}
         r1 = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True, timeout=20)
         subprocess.run(["systemctl", "restart", "zetronpoc-cola"], capture_output=True, text=True, timeout=20)
         restart_ok = getattr(r1, "returncode", -1) == 0
@@ -371,6 +380,8 @@ class Handler(BaseHTTPRequestHandler):
             email = d.get("email", db.get_config("backup_email"))
             r = db.enviar_email(email, "ZetronPOC - test SMTP", "Prueba OK")
             return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
+        if p == "/api/mmdvm/instalar":
+            return jok(self, instalar_mmdvm())
         if p == "/api/mmdvm":
             return jok(self, aplicar_mmdvm(d))
         return jtext(self, "no encontrado", 404)
