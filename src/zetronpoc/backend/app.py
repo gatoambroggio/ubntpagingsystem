@@ -296,6 +296,7 @@ class Handler(BaseHTTPRequestHandler):
         # estaticos
         if p == "/" or p == "/index.html": return serve_file(self, os.path.join(FRONT, "index.html"), "text/html; charset=utf-8")
         if p == "/admin" or p == "/admin.html": return serve_file(self, os.path.join(FRONT, "admin.html"), "text/html; charset=utf-8")
+        if p == "/historial" or p == "/historial.html": return serve_file(self, os.path.join(FRONT, "historial.html"), "text/html; charset=utf-8")
         # publicos
         if p == "/api/health": return jok(self, {"status": "ok", "ts": int(time.time())})
         if p == "/api/version": return jok(self, {"version": db.get_config("version", "2.0")})
