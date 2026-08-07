@@ -111,7 +111,7 @@ def aplicar_mmdvm(d=None):
         # detectar si MMDVMHost esta instalado antes de reiniciar el servicio
         svc_exists = os.path.exists("/etc/systemd/system/mmdvmhost.service") or \
                      os.path.islink("/etc/systemd/system/multi-user.target.wants/mmdvmhost.service")
-        bin_exists = os.path.exists("/usr/local/bin/MMDVMHost")
+        bin_exists = os.path.exists("/usr/local/bin/MMDVM-Host") or os.path.exists("/usr/local/bin/MMDVMHost")
         if not svc_exists or not bin_exists:
             return {"ok": False, "no_instalado": True,
                     "mensaje": "El servicio MMDVMHost no esta instalado en este servidor.",
