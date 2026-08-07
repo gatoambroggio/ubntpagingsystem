@@ -261,14 +261,16 @@ pre{background:rgba(4,6,13,.95);border:1px solid var(--line);border-radius:10px;
 <div class="modal" id="mPager"><div class="card"><h2 id="mPT">Pager</h2>
   <div class="row"><div><label>Codigo (DTMF)</label><input id="p_codigo"></div><div><label>CapCode</label><input id="p_cap"></div></div>
   <div class="row"><div><label>Nombre</label><input id="p_nombre"></div><div><label>Apellido</label><input id="p_apellido"></div></div>
-  <div class="row"><div><label>Area</label><input id="p_area"></div><div><label>Baudios</label><input id="p_baud" type="number" value="1200"></div></div>
+  <div class="row"><div><label>Area</label><input id="p_area"></div><div><label>Baudios</label><input id="p_baud" type="number" value="512"></div></div>
   <div class="row"><div><label>Funcion</label><select id="p_func"><option value="alphanumeric">Alfanumerico</option><option value="numeric">Numerico</option><option value="tone">Tono</option></select></div></div>
   <label>Descripcion</label><input id="p_desc">
   <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="savePager()">Guardar</button><button class="btn btn-sec" onclick="closeModal('mPager')">Cancelar</button></div></div></div>
 <div class="modal" id="mGrupo"><div class="card"><h2 id="mGT">Grupo</h2>
-  <div class="row"><div><label>Codigo</label><input id="g_codigo"></div><div><label>Baudios</label><input id="g_baud" type="number" value="1200"></div></div>
+  <div class="row"><div><label>Codigo</label><input id="g_codigo"></div><div><label>Baudios</label><input id="g_baud" type="number" value="512"></div></div>
   <label>Nombre</label><input id="g_nombre">
-  <label>CapCodes (uno por linea, max 20)</label><textarea id="g_miembros" rows="6"></textarea>
+  <label>Buscar pager</label><input id="g_search" placeholder="Nombre, codigo o area..." oninput="filterGp()">
+  <label>Miembros (seleccione pagers, max 20)</label>
+  <div id="g_list" style="max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:9px;padding:.4rem;background:rgba(8,11,26,.6)"></div>
   <div style="display:flex;gap:.5rem;margin-top:.9rem"><button class="btn btn-pri" onclick="saveGrupo()">Guardar</button><button class="btn btn-sec" onclick="closeModal('mGrupo')">Cancelar</button></div></div></div>
 <div class="modal" id="mExt"><div class="card"><h2 id="mET">Extension</h2>
   <div class="row"><div><label>Numero</label><input id="x_numero"></div><div><label>Clave</label><input id="x_pass"></div></div>
@@ -329,8 +331,8 @@ async function delP(id){if(confirm('Eliminar pager?')){await api('DELETE','/api/
 // Grupos
 async function loadGrupos(){const q=document.getElementById('gq').value.trim();const r=await api('GET','/api/grupos'+(q?('?q='+encodeURIComponent(q)):''));document.getElementById('tb_grupos').innerHTML=(r||[]).map(x=>`<tr><td>${x.codigo}</td><td>${x.nombre||''}</td><td class="mono">${(x.miembros||[]).join(', ')}</td><td>${x.baudios}</td><td><button class="btn btn-sec btn-sm" onclick="openGrupo(${x.id})">✎</button> <button class="btn btn-del btn-sm" onclick="delG(${x.id})">✕</button></td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--mut);padding:1rem">Sin resultados</td></tr>';}
 document.getElementById('gq').addEventListener('input',()=>{clearTimeout(window._gt);window._gt=setTimeout(loadGrupos,200);});
-async function openGrupo(id){editG=id||null;let x=null;if(id){const r=await api('GET','/api/grupos');x=(r||[]).find(i=>i.id===id);}document.getElementById('g_codigo').value=x?x.codigo:'';document.getElementById('g_nombre').value=x?x.nombre||'':'';document.getElementById('g_miembros').value=x?(x.miembros||[]).join('\n'):'';document.getElementById('g_baud').value=x?x.baudios:1200;document.getElementById('mGT').textContent=id?'Editar grupo':'Nuevo grupo';openModal('mGrupo');}
-async function saveGrupo(){const d={codigo:document.getElementById('g_codigo').value,nombre:document.getElementById('g_nombre').value,baudios:+document.getElementById('g_baud').value,miembros:document.getElementById('g_miembros').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,20)};if(editG)await api('PUT','/api/grupos/'+editG,d);else await api('POST','/api/grupos',d);closeModal('mGrupo');loadGrupos();}
+
+
 async function delG(id){if(confirm('Eliminar grupo?')){await api('DELETE','/api/grupos/'+id);loadGrupos();}}
 
 // Import
