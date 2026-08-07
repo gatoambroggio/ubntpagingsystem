@@ -346,8 +346,16 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path); p = u.path
         if p == "/api/login":
             d = self._json()
-            tok = db.login_validar(d.get("user", ""), d.get("pass", ""))
-            db.registrar_log("info" if tok else "warn", "api", "login user=%s %s" % (d.get("user",""), "ok" if tok else "fail"))
+            try:
+                tok = db.login_validar(d.get("user", ""), d.get("pass", ""))
+            except Exception as e:
+                try: db.registrar_log("error", "api", "login_validar fallo: %s" % str(e)[:120])
+                except Exception: pass
+                return jok(self, {"error": "base de datos no disponible"}, 401)
+            try:
+                db.registrar_log("info" if tok else "warn", "api", "login user=%s %s" % (d.get("user",""), "ok" if tok else "fail"))
+            except Exception:
+                pass
             if tok: return jok(self, {"token": tok})
             return jok(self, {"error": "credenciales invalidas"}, 401)
         if p == "/api/enviar":
