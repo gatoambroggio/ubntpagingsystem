@@ -66,7 +66,7 @@ li:hover{background:rgba(0,240,255,.1)}
 <script>
 async function loadHistorial(){
   try{
-    var r=await fetch('/api/historial?limit=50').then(function(r){return r.json();});
+    var r=await fetch('/api/historial/public').then(function(r){return r.json();});
     var rows=(r&&r.rows)||[];var tb=document.getElementById('histBody');
     if(!rows.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;opacity:.6;padding:.6rem">Sin envios</td></tr>';return;}
     var html='';
@@ -80,7 +80,7 @@ async function loadHistorial(){
   }catch(e){document.getElementById('histBody').innerHTML='<tr><td colspan="6" style="text-align:center;color:#ff3b5c;padding:.6rem">Error al cargar historial</td></tr>';}
 }
 async function descargarHistorial(){
-  try{var r=await fetch('/api/historial/export');var txt=await r.text();var blob=new Blob([txt],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='historial_zetronpoc.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){alert('No se pudo descargar el historial');}
+  try{var r=await fetch('/api/historial/public').then(function(r){return r.json();});var rows=(r&&r.rows)||[];var lines=['fecha_hora,interno,codigo,cap_code,mensaje,baudios,estado,observaciones'];rows.forEach(function(x){lines.push([x.fecha_hora,x.interno_origen,x.codigo,x.cap_code,JSON.stringify(x.mensaje||''),x.baudios,x.estado,JSON.stringify(x.observaciones||'')].join(','));});var txt=lines.join('\n');var blob=new Blob([txt],{type:'text/csv;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='historial_zetronpoc.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){alert('No se pudo descargar el historial');}
 }
 
 
