@@ -287,7 +287,7 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
     if not dest:
         return {"status": "error", "detalle": "codigo inactivo o inexistente"}
     caps, baudios, tipo = dest
-    cap_list = [c.strip() for c in str(caps).split(",") if c.strip()]
+    cap_list = [c2.strip() for c2 in str(caps).split(",") if c2.strip()] or [""]
     qid = encolar_mensaje(codigo, caps, mensaje, baudios, origen, db_path)
     # Procesar en caliente: transmite y registra bitacora ahora (no depende del worker).
     handler = "/var/lib/asterisk/agi-bin/pocsag_handler.py"
@@ -295,23 +295,33 @@ def enviar_mensaje(codigo, mensaje, origen="web", db_path=DEFAULT_DB):
         handler = os.path.join(os.path.dirname(__file__), "..", "agi", "pocsag_handler.py")
     env = dict(os.environ, ZETRONPOC_DIR="/opt/zetronpoc", POCSAG_WORKER="1")
     obs = ""
+    rc_ok = False
     try:
         rc = subprocess.run([sys.executable, handler, origen or "web", codigo, mensaje],
                             capture_output=True, text=True, timeout=60, env=env)
-        if rc.returncode != 0:
+        rc_ok = rc.returncode == 0
+        if not rc_ok:
             obs = (rc.stderr or rc.stdout or "fallo").strip()[:200]
     except Exception as e:
         obs = str(e)[:200]
-    estado = "encolado"
+    estado = "enviado" if rc_ok else "error"
     with get_conn(db_path) as conn:
         rows = conn.execute("SELECT estado FROM bitacora WHERE codigo=? AND mensaje=? ORDER BY id DESC LIMIT ?",
-                            (codigo, mensaje, len(cap_list) or 1)).fetchall()
+                            (codigo, mensaje, len(cap_list))).fetchall()
         if rows:
             estados = [r["estado"] for r in rows]
             if all(e == "enviado" for e in estados):
                 estado = "enviado"
             elif any(e == "error" for e in estados):
                 estado = "error"
+        else:
+            # el handler no registro bitacora: registrar a mano para que figure en historial
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for cap in cap_list:
+                conn.execute(
+                    "INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (ts, origen, codigo, cap, mensaje, baudios, estado, obs or "fallo handler"))
         conn.execute("UPDATE cola_envios SET estado=?, fecha_procesado=datetime('now','localtime'), observaciones=? WHERE id=?",
                      (estado, obs, qid))
     return {"status": estado, "detalle": "envio procesado" if estado == "enviado" else ("error: " + obs if obs else "sin confirmar"),
@@ -519,13 +529,43 @@ def estadisticas(db_path=DEFAULT_DB):
 
 def leer_logs(tipo, limit=200, db_path=DEFAULT_DB):
     if tipo == "mmdvm":
+        out = []
+        def _run(cmd, shell=False):
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, shell=shell)
+                return ((r.stdout or "") + (("\n" + r.stderr) if (r.stderr and not r.stdout) else "")).strip()
+            except Exception as e:
+                return "(error: %s)" % str(e)[:120]
+        out.append("=== systemctl status mmdvmhost ===")
+        out.append(_run(["systemctl", "status", "mmdvmhost", "--no-pager", "-n", "20"]) or "(sin salida)")
+        out.append("")
+        out.append("=== journalctl -u mmdvmhost (ultimas %s) ===" % limit)
+        out.append(_run(["journalctl", "-u", "mmdvmhost", "-n", str(int(limit)), "--no-pager"]) or "(sin logs)")
+        out.append("")
+        out.append("=== MMDVM.ini ===")
         try:
-            r = subprocess.run(["journalctl", "-u", "mmdvmhost", "-n", str(int(limit)), "--no-pager"],
-                               capture_output=True, text=True, timeout=15)
-            lineas = [l.rstrip() for l in (r.stdout or "").splitlines()][-int(limit):]
-            return {"lineas": lineas, "path": "journalctl -u mmdvmhost"}
+            ini_path = os.path.join(os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc"), "mmdvm", "MMDVM.ini")
+            if os.path.exists(ini_path):
+                with open(ini_path, "r", errors="replace") as f:
+                    out.append(f.read().strip())
+            else:
+                out.append("(MMDVM.ini no existe: %s)" % ini_path)
         except Exception as e:
-            return {"lineas": ["(no se pudo leer journalctl mmdvmhost: %s)" % str(e)[:120]], "path": "journalctl -u mmdvmhost"}
+            out.append("(error leyendo ini: %s)" % str(e)[:120])
+        out.append("")
+        out.append("=== Puertos serie detectados ===")
+        out.append(_run("ls -l /dev/ttyUSB* /dev/ttyAMA* /dev/serial/by-id/* 2>/dev/null", shell=True) or "(no se detectaron /dev/ttyUSB* ni /dev/ttyAMA*)")
+        out.append("")
+        out.append("=== Configuracion MMDVM ===")
+        try:
+            cfg = all_config(db_path)
+            for k in ("mmdvm_callsign", "mmdvm_serial_port", "mmdvm_baud", "mmdvm_frequency",
+                      "mmdvm_duplex", "mmdvm_pocsag_baud", "mmdvm_tx_invert", "mmdvm_tx_level",
+                      "mmdvm_rc_port", "mmdvm_display", "ptt_mode"):
+                out.append("%s = %s" % (k, cfg.get(k, "")))
+        except Exception as e:
+            out.append("(error config: %s)" % str(e)[:120])
+        return {"lineas": out, "path": "mmdvmhost: status + journal + ini + puertos + config"}
     paths = {"asterisk": "/var/log/asterisk/messages", "api": "/opt/zetronpoc/logs/api.log",
              "cola": "/opt/zetronpoc/logs/cola.log", "install": "/var/log/zetronpoc-install.log",
              "scheduler": "/opt/zetronpoc/logs/scheduler.log"}
