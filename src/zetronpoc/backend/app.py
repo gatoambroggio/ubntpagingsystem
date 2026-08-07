@@ -241,13 +241,15 @@ def ext_status():
             s = line.strip()
             if not s or s.startswith("Registration") or s.startswith("="):
                 continue
-            mm = re.match(r'(\w+)/', s)
+            # el nombre de registro puede tener guion (ej: reg-2000); \w no lo toma
+            mm = re.match(r'([A-Za-z0-9_.-]+)/', s)
             if not mm:
                 continue
-            num = mm.group(1)
+            name = mm.group(1)
+            key = name[4:] if name.startswith("reg-") else name
             toks = s.split()
             status = next((t for t in reversed(toks) if t in states), toks[-1] if toks else "-")
-            out[num] = status
+            out[key] = status
     except Exception:
         pass
     return out
