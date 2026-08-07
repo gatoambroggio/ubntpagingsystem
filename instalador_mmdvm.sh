@@ -74,7 +74,7 @@ if [[ ! -d "${MMDVMHOST_SRC}/.git" ]]; then
   rm -rf "${MMDVMHOST_SRC}"
   git clone --depth 1 https://github.com/g4klx/MMDVMHost "${MMDVMHOST_SRC}" || { err "No se pudo clonar MMDVMHost"; exit 1; }
 fi
-( cd "${MMDVMHOST_SRC}" && make -j"$(nproc)" )
+( cd "${MMDVMHOST_SRC}" && make clean && make -j"$(nproc)" )
 install -m 0755 "${MMDVMHOST_SRC}/MMDVMHost" /usr/local/bin/MMDVMHost
 log "MMDVMHost compilado e instalado"
 
