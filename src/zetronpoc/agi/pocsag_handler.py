@@ -76,21 +76,32 @@ def main():
             registrar_bitacora(interno, codigo, cap, mensaje, baudios, "error", "encoder")
             fail()
         wavs.append(wav)
-    obs = []
+    # Transmitir cada wav y registrar el resultado real por cap (antes marcaba todo enviado)
+    ptt_on = False
     try:
         subprocess.run([PTT_ON], capture_output=True, timeout=5)
+        ptt_on = True
         time.sleep(pre)
-        for wav in wavs:
+        for cap, wav in zip(cap_list, wavs):
             r = subprocess.run(["aplay", "-q", wav], capture_output=True, text=True, timeout=30)
             if r.returncode != 0:
-                obs.append("aplay: %s" % (r.stderr or "").strip()[:80])
-        subprocess.run([PTT_OFF], capture_output=True, timeout=5)
+                err = "aplay: %s" % (r.stderr or "").strip()[:80]
+                registrar_bitacora(interno, codigo, cap, mensaje, baudios, "error", err)
+                log("Aplay fallo para %s: %s" % (cap, err))
+            else:
+                registrar_bitacora(interno, codigo, cap, mensaje, baudios, "enviado", "")
     except Exception as e:
-        obs.append("excepcion: %s" % str(e)[:80])
-    obs_txt = "; ".join(obs)
-    for cap in cap_list:
-        registrar_bitacora(interno, codigo, cap, mensaje, baudios, "enviado", obs_txt)
-    log("Envio OK codigo=%s caps=%s msg=%s obs=%s" % (codigo, caps, mensaje, obs_txt or "ok"))
+        err = "excepcion: %s" % str(e)[:80]
+        for cap in cap_list:
+            registrar_bitacora(interno, codigo, cap, mensaje, baudios, "error", err)
+        log("Excepcion en transmision: %s" % err)
+    finally:
+        if ptt_on:
+            try:
+                subprocess.run([PTT_OFF], capture_output=True, timeout=5)
+            except Exception:
+                pass
+    log("Envio procesado codigo=%s caps=%s msg=%s" % (codigo, caps, mensaje))
 
 if __name__ == "__main__":
     try:
