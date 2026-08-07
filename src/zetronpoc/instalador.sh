@@ -64,9 +64,8 @@ for f in pogsag_handler.py pogsag_check.py cola_worker.py; do
 done
 # Quitar cron y logrotate viejos
 rm -f /etc/cron.d/pogsag-cleanup /etc/logrotate.d/pogsag 2>/dev/null || true
-# Recargar Asterisk para que solte endpoints/registros viejos
-asterisk -rx "pjsip reload" 2>/dev/null || true
-asterisk -rx "dialplan reload" 2>/dev/null || true
+# Detener Asterisk (los reload en cadena dejan "reload already in progress" y traban todo)
+systemctl stop asterisk 2>/dev/null || true
 log "Sistema anterior limpio."
 
 # ============================ 1. DEPENDENCIAS ================================
@@ -201,18 +200,16 @@ cat > /etc/logrotate.d/zetronpoc <<EOF
 ${APP_DIR}/logs/*.log { daily rotate 14 compress missingok notifempty }
 EOF
 systemctl daemon-reload
-systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
-asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
-asterisk -rx "pjsip reload" 2>/dev/null || true
-sleep 1
-# Verificar que res_pjsip cargo el transporte; si no, forzar recarga del modulo
-if ! asterisk -rx "pjsip show transports" 2>/dev/null | grep -q "transport-udp"; then
-  warn "pjsip no cargo el transporte. Reintentando..."
-  asterisk -rx "module reload res_pjsip.so" 2>/dev/null || true
-  asterisk -rx "pjsip reload" 2>/dev/null || true
+systemctl enable asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
+# REINICIO LIMPIO (no reload): un solo restart carga pjsip + dialplan de una vez
+# sin el "reload already in progress" que dejaba pjsip y el dialplan sin cargar.
+systemctl restart asterisk 2>/dev/null || true
+for _ in $(seq 1 15); do
+  asterisk -rx "core show uptime" >/dev/null 2>&1 && break
   sleep 1
-fi
-asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || true
+done
+asterisk -rx "pjsip send register *all" 2>/dev/null || true
+asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || warn "transport-udp no visible tras restart"
 systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
 systemctl enable --now zetronpoc-cola 2>/dev/null || true
 sleep 2
