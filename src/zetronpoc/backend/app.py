@@ -2,6 +2,10 @@
 """
 app.py - ZetronPOC v2.0 - API REST + servidor de estaticos.
 http.server puro (sin Flask) para maxima portabilidad. Puerto 8080.
+
+Todas las mutaciones (login, envio, CRUD, apply, pbx, cola, db, config)
+registran auditoria (tabla auditoria) y log centralizado (tabla logs).
+El repo es la unica fuente de verdad.
 """
 import os, sys, json, subprocess, io, time, csv, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,162 +14,6 @@ APP_DIR = os.environ.get("ZETRONPOC_DIR", "/opt/zetronpoc")
 sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "database"))
 import db_manager as db
-
-# ---- MMDVM (placa serial, sin .wav) ----
-MMDVM_KEYS = ["mmdvm_callsign", "mmdvm_serial_port", "mmdvm_baud", "mmdvm_frequency",
-              "mmdvm_duplex", "mmdvm_pocsag_baud", "mmdvm_tx_invert", "mmdvm_tx_level",
-              "mmdvm_rc_port", "mmdvm_display"]
-MMDVM_INI = os.path.join(APP_DIR, "mmdvm", "MMDVM.ini")
-
-def mmdvm_ini_content(c):
-    def g(k, d):
-        v = c.get(k, d)
-        return str(v if v not in (None, "") else d)
-    freq_mhz = float(g("mmdvm_frequency", "433.8"))
-    freq_hz = int(round(freq_mhz * 1000000))
-    call = g("mmdvm_callsign", "LU1ABC")
-    port = g("mmdvm_serial_port", "/dev/ttyUSB0")
-    baud = g("mmdvm_baud", "115200")
-    duplex = g("mmdvm_duplex", "0")
-    txinv = g("mmdvm_tx_invert", "1")
-    txlevel = g("mmdvm_tx_level", "50")
-    rcport = g("mmdvm_rc_port", "7642")
-    disp = g("mmdvm_display", "None")
-    dispen = "0" if disp == "None" else "1"
-    return """# MMDVM.ini - generado por panel ZetronPOC (MMDVM serial, sin .wav)
-[General]
-Callsign=%s
-Id=2040000
-Timeout=180
-Duplex=%s
-RFModeHang=10
-DMR=0
-DSTAR=0
-YSF=0
-P25=0
-NXDN=0
-POCSAG=1
-Display=%s
-
-[Modem]
-Port=%s
-BaudeRate=%s
-TXInvert=%s
-RXInvert=0
-PTTInvert=0
-TXDelay=100
-RXLevel=50
-DMRTXLevel=%s
-DSTAR_TXLevel=%s
-YSFTXLevel=%s
-P25TXLevel=%s
-NXDNTXLevel=%s
-POCSAGTXLevel=%s
-TXFrequency=%d
-RXFrequency=%d
-TXOffset=0
-RXOffset=0
-RSSIMapping=0:0,100:100
-UseCOSAsLockout=0
-
-[POCSAG]
-Enable=1
-Callsign=%s
-
-[Remote Control]
-Enable=1
-Port=%s
-
-[DAPNET]
-Enable=0
-
-[Display]
-Enabled=%s
-Type=%s
-Port=%s
-
-[Info]
-Enabled=0
-
-[Log]
-DisplayLevel=1
-FileLevel=1
-FilePath=/var/log/mmdvm
-FileRoot=MMDVM
-""" % (call, duplex, disp, port, baud, txinv, txlevel, txlevel, txlevel,
-       txlevel, txlevel, txlevel, freq_hz, freq_hz, call, rcport, dispen, disp, port)
-
-def aplicar_mmdvm(d=None):
-    try:
-        if d:
-            for k, v in d.items():
-                if k in MMDVM_KEYS:
-                    db.set_config(k, str(v))
-        db.set_config("ptt_mode", "mmdvm")
-        db.set_config("mmdvm_rc_host", "127.0.0.1")
-        c = db.all_config()
-        ini = mmdvm_ini_content(c)
-        os.makedirs(os.path.dirname(MMDVM_INI), exist_ok=True)
-        with open(MMDVM_INI, "w") as f:
-            f.write(ini)
-        # detectar si MMDVMHost esta instalado antes de reiniciar el servicio
-        svc_exists = os.path.exists("/etc/systemd/system/mmdvmhost.service") or \
-                     os.path.islink("/etc/systemd/system/multi-user.target.wants/mmdvmhost.service")
-        bin_exists = os.path.exists("/usr/local/bin/MMDVM-Host") or os.path.exists("/usr/local/bin/MMDVMHost")
-        if not svc_exists or not bin_exists:
-            return {"ok": False, "no_instalado": True,
-                    "mensaje": "El servicio MMDVMHost no esta instalado en este servidor.",
-                    "instalar_cmd": "curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_mmdvm.sh | sudo bash",
-                    "path": MMDVM_INI}
-        r1 = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True, timeout=20)
-        subprocess.run(["systemctl", "restart", "zetronpoc-cola"], capture_output=True, text=True, timeout=20)
-        restart_ok = getattr(r1, "returncode", -1) == 0
-        detail = ((getattr(r1, "stderr", "") or "").strip() or (getattr(r1, "stdout", "") or "").strip())
-        status_txt = ""
-        if not restart_ok:
-            try:
-                st = subprocess.run(["systemctl", "status", "mmdvmhost", "--no-pager", "-n", "15"],
-                                    capture_output=True, text=True, timeout=10)
-                status_txt = ((st.stdout or "") + (st.stderr or "")).strip()[-800:]
-            except Exception as se:
-                status_txt = "status: %s" % str(se)[:120]
-        try:
-            with open(os.path.join(APP_DIR, "logs", "mmdvm.log"), "a") as _lf:
-                _lf.write("%s | aplicar_mmdvm | %s | restart=%s | %s\n" % (
-                    time.strftime("%Y-%m-%d %H:%M:%S"), "OK" if restart_ok else "FALLO",
-                    restart_ok, (detail or "ok")[:200]))
-        except Exception:
-            pass
-        db.registrar_log("info" if restart_ok else "error", "api", "mmdvm/apply restart=%s" % restart_ok)
-        return {"ok": restart_ok, "path": MMDVM_INI, "restart": restart_ok,
-                "stderr": detail[:500], "status": status_txt}
-    except Exception as e:
-        import traceback
-        return {"ok": False, "error": str(e), "stderr": traceback.format_exc()[-800:]}
-
-
-def instalar_mmdvm():
-    """Descarga y ejecuta instalador_mmdvm.sh: compila MMDVMHost, crea el
-    servicio systemd y el puente POCSAG. Puede tardar varios minutos."""
-    url = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_mmdvm.sh"
-    try:
-        dl = subprocess.run(["curl", "-fsSL", url], capture_output=True, text=True, timeout=60)
-        if dl.returncode != 0:
-            return {"ok": False, "error": "no se pudo descargar el instalador: %s" % (dl.stderr or "")[:200]}
-        script_path = os.path.join(APP_DIR, "scripts", "instalador_mmdvm.sh")
-        os.makedirs(os.path.dirname(script_path), exist_ok=True)
-        with open(script_path, "w") as f:
-            f.write(dl.stdout)
-        os.chmod(script_path, 0o755)
-        r = subprocess.run(["bash", script_path], capture_output=True, text=True, timeout=600)
-        return {"ok": r.returncode == 0, "returncode": r.returncode,
-                "salida": (r.stdout or "")[-3000:], "stderr": (r.stderr or "")[-1000:],
-                "script": script_path}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout: la compilacion tardo mas de 10 minutos. Ejecuta manualmente: curl -fsSL %s | sudo bash" % url}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
 
 HOST, PORT = "0.0.0.0", 8080
 FRONT = os.path.join(APP_DIR, "frontend")
@@ -194,7 +42,6 @@ def serve_file(handler, path, ct):
     with open(path, "rb") as f: data = f.read()
     handler.send_response(200)
     handler.send_header("Content-Type", ct)
-    handler.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
@@ -202,6 +49,29 @@ def serve_file(handler, path, ct):
 def need_auth(handler):
     tok = handler.headers.get("Authorization", "").replace("Bearer ", "")
     return db.verificar_token(tok)
+
+def _tok(handler):
+    return handler.headers.get("Authorization", "").replace("Bearer ", "")
+
+def _ip(handler):
+    try: return handler.client_address[0] or ""
+    except Exception:
+        return ""
+
+def aud(handler, accion, entidad, eid="", detalle=""):
+    """Audita una mutacion. Nunca rompe la peticion."""
+    try:
+        db.registrar_auditoria(db.token_user(_tok(handler)), accion, entidad,
+                               str(eid or ""), str(detalle or "")[:240], _ip(handler))
+    except Exception:
+        pass
+
+def evlog(handler, nivel, origen, mensaje):
+    """Log centralizado en la tabla logs."""
+    try:
+        db.registrar_log(nivel, origen, mensaje)
+    except Exception:
+        pass
 
 def parse_rows_from_upload(filename, raw):
     rows = []
@@ -236,22 +106,12 @@ def pbx_run(cmd):
 
 def ext_status():
     out = {}
-    states = ("Registered", "Rejected", "Unregistered", "Trying", "Auth", "Sent", "Failed", "Stopped")
     try:
         r = subprocess.run(["asterisk", "-rx", "pjsip show registrations"], capture_output=True, text=True, timeout=10)
         for line in (r.stdout or "").splitlines():
-            s = line.strip()
-            if not s or s.startswith("Registration") or s.startswith("="):
-                continue
-            # el nombre de registro puede tener guion (ej: reg-2000); \w no lo toma
-            mm = re.match(r'([A-Za-z0-9_.-]+)/', s)
-            if not mm:
-                continue
-            name = mm.group(1)
-            key = name[4:] if name.startswith("reg-") else name
-            toks = s.split()
-            status = next((t for t in reversed(toks) if t in states), toks[-1] if toks else "-")
-            out[key] = status
+            m = re.match(r'\s*(\w+)/(.*?)\s+(\w+)\s+(\S+)', line)
+            if m and m.group(3) in ("Registered", "Rejected", "Unregistered", "Trying", "Auth", "Sent"):
+                out[m.group(1)] = m.group(3)
     except Exception:
         pass
     return out
@@ -260,16 +120,13 @@ def diagnose():
     ip = db.get_config("hospital_pbx_ip", "")
     puerto = db.get_config("hospital_pbx_port", "5060")
     pasos = []
-    # 1 ping
     pr = subprocess.run(["ping", "-c", "2", "-W", "2", ip], capture_output=True, text=True, timeout=10) if ip else None
     pasos.append({"paso": "Ping a central %s" % ip, "ok": bool(pr and pr.returncode == 0),
                   "salida": (pr.stdout or pr.stderr or "sin IP")[-400:]})
-    # 2 sip port
     sr = subprocess.run(["bash", "-c", "timeout 3 bash -c 'echo > /dev/tcp/%s/%s' 2>&1" % (ip, puerto)],
                         capture_output=True, text=True) if ip else None
     pasos.append({"paso": "Puerto SIP %s:%s" % (ip, puerto), "ok": bool(sr and sr.returncode == 0),
                   "salida": "OK" if sr and sr.returncode == 0 else "cerrado/inaccesible"})
-    # 3 pjsip conf
     conf = ""
     try:
         with open("/etc/asterisk/pjsip.conf") as f: conf = f.read()[:4000]
@@ -284,22 +141,6 @@ def diagnose():
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
-    def _safe(self, fn):
-        try:
-            return fn()
-        except BrokenPipeError:
-            pass
-        except Exception as e:
-            try: evlog(self, "error", "api", "%s %s: %s" % (self.command, self.path, str(e)[:200]))
-            except: pass
-            try: return jok(self, {"error": "error interno: %s" % str(e)[:200]}, 500)
-            except: pass
-
-    def do_GET(self): return self._safe(self._do_GET_impl)
-    def do_POST(self): return self._safe(self._do_POST_impl)
-    def do_PUT(self): return self._safe(self._do_PUT_impl)
-    def do_DELETE(self): return self._safe(self._do_DELETE_impl)
-
     def _body(self):
         n = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(n) if n else b""
@@ -308,40 +149,47 @@ class Handler(BaseHTTPRequestHandler):
         try: return json.loads(self._body() or "{}")
         except Exception: return {}
 
-    def _do_GET_impl(self):
+    def do_GET(self):
+        try: return self._get()
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            try: return jok(self, {"error": str(e)}, 500)
+            except Exception: pass
+    def _get(self):
         u = urllib.parse.urlparse(self.path); p = u.path; q = urllib.parse.parse_qs(u.query)
-        # estaticos
         if p == "/" or p == "/index.html": return serve_file(self, os.path.join(FRONT, "index.html"), "text/html; charset=utf-8")
         if p == "/admin" or p == "/admin.html": return serve_file(self, os.path.join(FRONT, "admin.html"), "text/html; charset=utf-8")
-        if p == "/historial" or p == "/historial.html": return serve_file(self, os.path.join(FRONT, "historial.html"), "text/html; charset=utf-8")
-        # publicos
         if p == "/api/health": return jok(self, {"status": "ok", "ts": int(time.time())})
         if p == "/api/version": return jok(self, {"version": db.get_config("version", "2.0")})
         if p == "/api/theme": return jok(self, db.all_config())
         if p == "/api/pagers": return jok(self, db.buscar_pagers(q.get("q", [""])[0]))
         if p == "/api/grupos": return jok(self, db.buscar_grupos(q.get("q", [""])[0]))
-        if p == "/api/plantillas/public": return jok(self, [t for t in db.listar_plantillas() if int(t.get("activo",0))])
-        if p == "/api/login": return jtext(self, "use POST", 405)
         if p == "/api/historial/public":
-            return jok(self, db.historial({}, 50, 0))
-        # auth
+            return jok(self, db.historial({}, 100, 0))
+        if p == "/api/login": return jtext(self, "use POST", 405)
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
 
         if p == "/api/config": return jok(self, db.all_config())
-        if p == "/api/mmdvm": return jok(self, {k: db.all_config().get(k, "") for k in MMDVM_KEYS})
+        if p == "/api/mmdvm/config": return jok(self, {k: v for k, v in db.all_config().items() if k.startswith("mmdvm_")})
         if p == "/api/extensions": return jok(self, db.listar_extensiones())
         if p == "/api/extensions/status": return jok(self, ext_status())
         if p == "/api/plantillas": return jok(self, db.listar_plantillas())
         if p == "/api/programados": return jok(self, db.listar_programados())
-        if p == "/api/auditoria": return jok(self, db.listar_auditoria(int(q.get("limit", ["200"])[0])))
-        if p == "/api/stats":
-            try: return jok(self, db.estadisticas())
-            except Exception as e:
-                evlog(self, "error", "api", "stats: %s" % str(e)[:200])
-                return jok(self, {"por_dia": [], "por_hora": [], "top_pagers": [], "total_enviados": 0, "total_ok": 0, "total_err": 0, "cola": {}})
+        if p == "/api/auditoria":
+            return jok(self, db.listar_auditoria(int(q.get("limit", ["200"])[0]), int(q.get("offset", ["0"])[0])))
+        if p == "/api/logs":
+            tipo = q.get("tipo", ["api"])[0]
+            # logs en BD (tabla logs) cuando tipo=db
+            if tipo == "db":
+                with db.get_conn() as conn:
+                    rows = [dict(r) for r in conn.execute(
+                        "SELECT fecha_hora,nivel,origen,mensaje FROM logs ORDER BY id DESC LIMIT ?",
+                        (int(q.get("limit", ["300"])[0]),))]
+                return jok(self, {"lineas": ["%s [%s] %s: %s" % (r["fecha_hora"], r["nivel"], r["origen"], r["mensaje"]) for r in rows], "path": "sqlite:logs"})
+            return jok(self, db.leer_logs(tipo, int(q.get("limit", ["300"])[0])))
+        if p == "/api/stats": return jok(self, db.estadisticas())
         if p == "/api/cola": return jok(self, db.listar_cola(q.get("estado", [None])[0], int(q.get("limit", ["200"])[0])))
         if p == "/api/cola/estado": return jok(self, db.estado_cola())
-        if p == "/api/logs": return jok(self, db.leer_logs(q.get("tipo", ["api"])[0], int(q.get("limit", ["300"])[0])))
         if p == "/api/historial":
             f = {k: q[k][0] for k in q if k not in ("limit", "offset")}
             return jok(self, db.historial(f, int(q.get("limit", ["50"])[0]), int(q.get("offset", ["0"])[0])))
@@ -360,171 +208,289 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         if p == "/api/pbx": return jok(self, pbx_run(q.get("cmd", [""])[0]))
         if p == "/api/pbx/diagnose": return jok(self, diagnose())
+        if p == "/api/mmdvm/status":
+            bin_ok = os.path.exists("/usr/local/bin/MMDVM-Host")
+            svc = "unknown"
+            try:
+                r = subprocess.run(["systemctl", "is-active", "mmdvmhost"], capture_output=True, text=True, timeout=5)
+                svc = (r.stdout or "").strip() or "unknown"
+            except Exception:
+                pass
+            return jok(self, {"installed": bin_ok, "service": svc, "binary": "/usr/local/bin/MMDVM-Host" if bin_ok else None})
         return jtext(self, "no encontrado", 404)
 
-    def _do_POST_impl(self):
+    def do_POST(self):
+        try: return self._post()
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            try: return jok(self, {"error": str(e)}, 500)
+            except Exception: pass
+    def _post(self):
         u = urllib.parse.urlparse(self.path); p = u.path
         if p == "/api/login":
             d = self._json()
+            user = d.get("user", "")
             try:
-                tok = db.login_validar(d.get("user", ""), d.get("pass", ""))
+                tok = db.login_validar(user, d.get("pass", ""))
             except Exception as e:
-                try: db.registrar_log("error", "api", "login_validar fallo: %s" % str(e)[:120])
-                except Exception: pass
+                evlog(self, "error", "api", "login_validar fallo: %s" % str(e)[:120])
                 return jok(self, {"error": "base de datos no disponible"}, 401)
+            ok = bool(tok)
             try:
-                db.registrar_log("info" if tok else "warn", "api", "login user=%s %s" % (d.get("user",""), "ok" if tok else "fail"))
+                db.registrar_auditoria(user or "?", "login", "auth", "", "ok" if ok else "credenciales invalidas", _ip(self))
             except Exception:
                 pass
+            evlog(self, "info" if ok else "warn", "api", "login user=%s %s" % (user, "ok" if ok else "fail"))
             if tok: return jok(self, {"token": tok})
             return jok(self, {"error": "credenciales invalidas"}, 401)
         if p == "/api/enviar":
             d = self._json()
-            db.registrar_log("info", "api", "enviar codigo=%s origen=%s" % (d.get("codigo"), d.get("origen","web")))
-            return jok(self, db.enviar_mensaje(d.get("codigo"), d.get("mensaje"), d.get("origen", "web")))
+            codigo = d.get("codigo", ""); mensaje = d.get("mensaje", ""); origen = d.get("origen", "web")
+            res = db.enviar_mensaje(codigo, mensaje, origen)
+            # auditar como sistema (endpoint publico) con el origen declarado
+            try:
+                db.registrar_auditoria(origen or "web", "enviar", "mensaje", str(res.get("id", "")),
+                                        "codigo=%s estado=%s" % (codigo, res.get("status", "")), _ip(self))
+            except Exception:
+                pass
+            evlog(self, "info", "api", "enviar codigo=%s estado=%s" % (codigo, res.get("status", "")))
+            return jok(self, res)
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         d = self._json()
+        if p == "/api/mmdvm/apply":
+            for k, v in d.items():
+                if k.startswith("mmdvm_"):
+                    db.set_config(k, "" if v is None else str(v))
+            ok, msg = db.generar_mmdvm_ini()
+            if not ok:
+                aud(self, "aplicar", "mmdvm", "", "fallo: %s" % msg)
+                evlog(self, "error", "mmdvm", "apply fallo: %s" % msg)
+                return jok(self, {"ok": False, "error": "No se pudo generar MMDVM.ini: %s" % msg})
+            try:
+                r = subprocess.run(["systemctl", "restart", "mmdvmhost"], capture_output=True, text=True, timeout=20)
+            except FileNotFoundError:
+                aud(self, "aplicar", "mmdvm", "", "systemctl no disponible")
+                return jok(self, {"ok": False, "error": "MMDVM.ini generado, pero systemctl no esta disponible en este host."})
+            except subprocess.TimeoutExpired:
+                aud(self, "aplicar", "mmdvm", "", "timeout restart")
+                return jok(self, {"ok": False, "error": "MMDVM.ini generado, pero el reinicio de mmdvmhost demoro demasiado."})
+            if r.returncode != 0:
+                svc_err = (r.stderr or r.stdout or "").strip()
+                aud(self, "aplicar", "mmdvm", "", "restart fallo: %s" % svc_err[:120])
+                evlog(self, "error", "mmdvm", "restart fallo: %s" % svc_err[:200])
+                return jok(self, {"ok": False, "error": "MMDVM.ini generado en %s, pero fallo reiniciar el servicio 'mmdvmhost': %s" % (db.MMDVM_INI, svc_err or "verifique que MMDVMHost este instalado")})
+            aud(self, "aplicar", "mmdvm", "", "ok")
+            evlog(self, "info", "mmdvm", "apply ok en %s" % db.MMDVM_INI)
+            return jok(self, {"ok": True, "salida": "MMDVM.ini generado en %s y servicio mmdvmhost reiniciado." % db.MMDVM_INI, "ini": db.MMDVM_INI})
+        if p == "/api/mmdvm/install":
+            url = "https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/instalador_mmdvm.sh"
+            aud(self, "instalar", "mmdvm", "", "inicio")
+            evlog(self, "info", "mmdvm", "install inicio")
+            try:
+                r = subprocess.run(["bash", "-c", "curl -fsSL %s | bash" % url],
+                                   capture_output=True, text=True, timeout=600)
+                out = (r.stdout or "") + (r.stderr or "")
+                aud(self, "instalar", "mmdvm", "", "rc=%s" % r.returncode)
+                evlog(self, "info" if r.returncode == 0 else "error", "mmdvm", "install rc=%s" % r.returncode)
+                return jok(self, {"ok": r.returncode == 0, "salida": out[-12000:], "code": r.returncode})
+            except subprocess.TimeoutExpired:
+                aud(self, "instalar", "mmdvm", "", "timeout")
+                return jok(self, {"ok": False, "error": "La instalacion demoro mas de 10 minutos. Revisa: journalctl -u mmdvmhost"})
+            except Exception as e:
+                aud(self, "instalar", "mmdvm", "", "excepcion: %s" % str(e)[:120])
+                return jok(self, {"ok": False, "error": str(e)})
         if p == "/api/extensions":
-            return jok(self, {"id": db.crear_extension(d)})
+            nid = db.crear_extension(d)
+            aud(self, "crear", "extension", nid, d.get("numero", ""))
+            return jok(self, {"id": nid})
         if p == "/api/extensions/aplicar":
             ok, msg = db.generar_pjsip_conf()
-            db.registrar_log("info" if ok else "error", "api", "extensions/aplicar: %s" % msg)
             if ok:
-                reload_out = ""
-                need_restart = False
-                try:
-                    r = subprocess.run(["asterisk", "-rx", "pjsip reload"], capture_output=True, text=True, timeout=10)
-                    reload_out = ((r.stdout or "") + (r.stderr or ""))
-                    if r.returncode != 0 or "didn't finish" in reload_out.lower():
-                        need_restart = True
-                except Exception:
-                    need_restart = True
-                # pjsip reload devuelve OK aunque el transporte no rebindee 5060 (socket viejo no soltado).
-                # Si transport-udp no aparece tras el reload, forzamos restart de Asterisk.
-                try:
-                    tr = subprocess.run(["asterisk", "-rx", "pjsip show transports"], capture_output=True, text=True, timeout=10)
-                    if "transport-udp" not in ((tr.stdout or "") + (tr.stderr or "")):
-                        need_restart = True
-                except Exception:
-                    need_restart = True
-                if need_restart:
-                    try:
-                        subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=25)
-                        time.sleep(4)
-                    except Exception:
-                        pass
-                # Registrar cada interno por nombre (determinista; "pjsip send register *all" no es estandar).
-                reg_log = []
-                for e in [x for x in db.listar_extensiones() if x["activo"]]:
-                    num = e["numero"]
-                    try:
-                        rr = subprocess.run(["asterisk", "-rx", "pjsip send register reg-%s" % num],
-                                            capture_output=True, text=True, timeout=10)
-                        reg_log.append("reg-%s: %s" % (num, ((rr.stdout or "") + (rr.stderr or "")).strip()))
-                    except Exception as ex:
-                        reg_log.append("reg-%s: excepcion %s" % (num, ex))
-                time.sleep(2)
-                st = ext_status()
-                return jok(self, {"ok": True, "salida": msg, "registraciones": st, "log": "\n".join(reg_log)})
+                subprocess.run(["asterisk", "-rx", "pjsip reload"], capture_output=True, timeout=10)
+                subprocess.run(["asterisk", "-rx", "pjsip send register"], capture_output=True, timeout=10)
+            aud(self, "aplicar", "extensiones", "", "ok" if ok else "fallo: %s" % msg)
+            evlog(self, "info" if ok else "error", "pbx", "extensions/aplicar %s" % msg[:80])
             return jok(self, {"ok": ok, "salida": msg})
         if p == "/api/pagers":
-            return jok(self, {"id": db.crear_pager(d)})
+            nid = db.crear_pager(d)
+            aud(self, "crear", "pager", nid, d.get("codigo", ""))
+            return jok(self, {"id": nid})
         if p == "/api/pagers/import":
             fn = urllib.parse.unquote(self.headers.get("X-Filename", "import.csv"))
             rows, err = parse_rows_from_upload(fn, self._body())
             if err: return jok(self, {"error": err})
-            return jok(self, db.importar_pagers(rows))
+            res = db.importar_pagers(rows)
+            aud(self, "importar", "pagers", "", "ok=%s err=%s" % (res.get("importados"), res.get("errores")))
+            return jok(self, res)
         if p == "/api/grupos":
-            return jok(self, {"id": db.crear_grupo(d)})
+            nid = db.crear_grupo(d)
+            aud(self, "crear", "grupo", nid, d.get("codigo", ""))
+            return jok(self, {"id": nid})
         if p == "/api/grupos/import":
             fn = urllib.parse.unquote(self.headers.get("X-Filename", "import.csv"))
             rows, err = parse_rows_from_upload(fn, self._body())
             if err: return jok(self, {"error": err})
-            return jok(self, db.importar_grupos(rows))
+            res = db.importar_grupos(rows)
+            aud(self, "importar", "grupos", "", "ok=%s err=%s" % (res.get("importados"), res.get("errores")))
+            return jok(self, res)
         if p == "/api/plantillas":
-            return jok(self, {"id": db.crear_plantilla(d)})
+            nid = db.crear_plantilla(d)
+            aud(self, "crear", "plantilla", nid, d.get("nombre", ""))
+            return jok(self, {"id": nid})
         if p == "/api/programados":
-            return jok(self, {"id": db.crear_programado(d)})
+            nid = db.crear_programado(d)
+            aud(self, "crear", "programado", nid, d.get("codigo", ""))
+            return jok(self, {"id": nid})
         if p == "/api/cola/reintentar":
-            db.reintentar_cola(int(d.get("id", 0))); return jok(self, {"ok": True})
+            cid = int(d.get("id", 0))
+            db.reintentar_cola(cid)
+            aud(self, "reintentar", "cola", cid, "")
+            return jok(self, {"ok": True})
         if p == "/api/cola/limpiar":
-            db.limpiar_cola(); return jok(self, {"ok": True})
+            db.limpiar_cola()
+            aud(self, "limpiar", "cola", "", "")
+            return jok(self, {"ok": True})
         if p == "/api/pbx/reload":
             r1 = pbx_run("pjsip reload"); r2 = pbx_run("dialplan reload")
+            aud(self, "reload", "pbx", "", "pjsip+dialplan")
+            evlog(self, "info", "pbx", "reload")
             return jok(self, {"salida": r1.get("salida", "") + "\n" + r2.get("salida", "")})
         if p == "/api/pbx/restart":
             r = subprocess.run(["systemctl", "restart", "asterisk"], capture_output=True, text=True, timeout=20)
+            aud(self, "restart", "pbx", "", "")
+            evlog(self, "warn", "pbx", "restart")
             return jok(self, {"salida": r.stdout or r.stderr or "reiniciado"})
         if p == "/api/pbx/force-register":
-            r = pbx_run("pjsip send register *all")
+            r = pbx_run("pjsip send register")
+            aud(self, "force-register", "pbx", "", "")
             return jok(self, {"salida": r.get("salida", "ok")})
         if p == "/api/pbx/unregister":
             r = pbx_run("pjsip unregister")
+            aud(self, "unregister", "pbx", "", "")
             return jok(self, {"salida": r.get("salida", "ok")})
         if p == "/api/pbx/run":
-            db.registrar_log("info", "api", "pbx run: %s" % d.get("cmd",""))
-            return jok(self, pbx_run(d.get("cmd", "")))
+            cmd = d.get("cmd", "")
+            res = pbx_run(cmd)
+            aud(self, "run", "pbx", "", cmd[:120])
+            evlog(self, "info", "pbx", "run: %s" % cmd[:120])
+            return jok(self, res)
         if p == "/api/db/backup-email":
             bf = db.backup_db()
             r = db.enviar_email(db.get_config("backup_email"), "Backup ZetronPOC", "Backup adjunto.", bf)
+            aud(self, "backup-email", "db", "", "ok" if "ok" in r else "fallo")
             return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
         if p == "/api/db/restore":
             data = self._body()
-            db.restore_db(data); return jok(self, {"ok": True})
+            db.restore_db(data)
+            aud(self, "restore", "db", "", "")
+            evlog(self, "warn", "db", "restore")
+            return jok(self, {"ok": True})
         if p == "/api/smtp/test":
             email = d.get("email", db.get_config("backup_email"))
             r = db.enviar_email(email, "ZetronPOC - test SMTP", "Prueba OK")
+            aud(self, "test", "smtp", "", email or "")
             return jok(self, r if "ok" in r else {"error": r.get("error", "fallo")})
-        if p == "/api/mmdvm/instalar":
-            return jok(self, instalar_mmdvm())
-        if p == "/api/mmdvm":
-            return jok(self, aplicar_mmdvm(d))
         return jtext(self, "no encontrado", 404)
 
-    def _do_PUT_impl(self):
+    def do_PUT(self):
+        try: return self._put()
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            try: return jok(self, {"error": str(e)}, 500)
+            except Exception: pass
+    def _put(self):
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         u = urllib.parse.urlparse(self.path); p = u.path; d = self._json()
         if p == "/api/config":
-            for k, v in d.items(): db.set_config(k, str(v))
-            db.registrar_log("info", "api", "config actualizada (%d claves)" % len(d))
+            keys = list(d.keys())
+            for k, v in d.items(): db.set_config(k, "" if v is None else str(v))
+            aud(self, "guardar", "config", "", "keys=%s" % ",".join(keys)[:200])
+            evlog(self, "info", "config", "guardar %d keys" % len(keys))
             return jok(self, {"ok": True})
-        if p == "/api/mmdvm":
-            return jok(self, aplicar_mmdvm(d))
         m = re.match(r'/api/extensions/(\d+)$', p)
-        if m: db.actualizar_extension(int(m.group(1)), d); return jok(self, {"ok": True})
+        if m:
+            db.actualizar_extension(int(m.group(1)), d)
+            aud(self, "actualizar", "extension", m.group(1), d.get("numero", ""))
+            return jok(self, {"ok": True})
         m = re.match(r'/api/pagers/(\d+)$', p)
-        if m: db.actualizar_pager(int(m.group(1)), d); return jok(self, {"ok": True})
+        if m:
+            db.actualizar_pager(int(m.group(1)), d)
+            aud(self, "actualizar", "pager", m.group(1), d.get("codigo", ""))
+            return jok(self, {"ok": True})
         m = re.match(r'/api/pagers/(\d+)/estado$', p)
-        if m: db.toggle_pager(int(m.group(1)), int(d.get("activo", 1))); return jok(self, {"ok": True})
+        if m:
+            db.toggle_pager(int(m.group(1)), int(d.get("activo", 1)))
+            aud(self, "toggle", "pager", m.group(1), "activo=%s" % d.get("activo", 1))
+            return jok(self, {"ok": True})
         m = re.match(r'/api/grupos/(\d+)$', p)
-        if m: db.actualizar_grupo(int(m.group(1)), d); return jok(self, {"ok": True})
+        if m:
+            db.actualizar_grupo(int(m.group(1)), d)
+            aud(self, "actualizar", "grupo", m.group(1), d.get("codigo", ""))
+            return jok(self, {"ok": True})
         m = re.match(r'/api/plantillas/(\d+)$', p)
-        if m: db.actualizar_plantilla(int(m.group(1)), d); return jok(self, {"ok": True})
+        if m:
+            db.actualizar_plantilla(int(m.group(1)), d)
+            aud(self, "actualizar", "plantilla", m.group(1), d.get("nombre", ""))
+            return jok(self, {"ok": True})
         m = re.match(r'/api/programados/(\d+)$', p)
-        if m: db.actualizar_programado(int(m.group(1)), d); return jok(self, {"ok": True})
+        if m:
+            db.actualizar_programado(int(m.group(1)), d)
+            aud(self, "actualizar", "programado", m.group(1), d.get("codigo", ""))
+            return jok(self, {"ok": True})
         return jtext(self, "no encontrado", 404)
 
-    def _do_DELETE_impl(self):
+    def do_DELETE(self):
+        try: return self._delete()
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            try: return jok(self, {"error": str(e)}, 500)
+            except Exception: pass
+    def _delete(self):
         if not need_auth(self): return jok(self, {"error": "no autorizado"}, 401)
         p = urllib.parse.urlparse(self.path).path
         m = re.match(r'/api/extensions/(\d+)$', p)
-        if m: db.borrar_extension(int(m.group(1))); return jok(self, {"ok": True})
+        if m:
+            db.borrar_extension(int(m.group(1)))
+            aud(self, "borrar", "extension", m.group(1), "")
+            return jok(self, {"ok": True})
         m = re.match(r'/api/pagers/(\d+)$', p)
-        if m: db.borrar_pager(int(m.group(1))); return jok(self, {"ok": True})
+        if m:
+            db.borrar_pager(int(m.group(1)))
+            aud(self, "borrar", "pager", m.group(1), "")
+            return jok(self, {"ok": True})
         m = re.match(r'/api/grupos/(\d+)$', p)
-        if m: db.borrar_grupo(int(m.group(1))); return jok(self, {"ok": True})
+        if m:
+            db.borrar_grupo(int(m.group(1)))
+            aud(self, "borrar", "grupo", m.group(1), "")
+            return jok(self, {"ok": True})
         m = re.match(r'/api/plantillas/(\d+)$', p)
-        if m: db.borrar_plantilla(int(m.group(1))); return jok(self, {"ok": True})
+        if m:
+            db.borrar_plantilla(int(m.group(1)))
+            aud(self, "borrar", "plantilla", m.group(1), "")
+            return jok(self, {"ok": True})
         m = re.match(r'/api/programados/(\d+)$', p)
-        if m: db.borrar_programado(int(m.group(1))); return jok(self, {"ok": True})
+        if m:
+            db.borrar_programado(int(m.group(1)))
+            aud(self, "borrar", "programado", m.group(1), "")
+            return jok(self, {"ok": True})
         return jtext(self, "no encontrado", 404)
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+def _auto_init_db():
+    """Garantiza que la base y sus tablas existen al arrancar. Idempotente
+    (schema.sql usa CREATE TABLE IF NOT EXISTS). Nunca bloquea el arranque."""
+    try:
+        db.init_db()
+        print("[init] Base de datos verificada/creada.", flush=True)
+    except Exception as e:
+        print("[init] WARN: no se pudo inicializar la base: %s" % e, flush=True)
+
 if __name__ == "__main__":
     try:
         os.makedirs(os.path.join(APP_DIR, "logs"), exist_ok=True)
+        _auto_init_db()
         print("ZetronPOC v2.0 API en http://%s:%d" % (HOST, PORT), flush=True)
         Server((HOST, PORT), Handler).serve_forever()
     except Exception:
