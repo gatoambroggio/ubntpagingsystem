@@ -5,10 +5,11 @@
 # Registra internos SIP contra la central FreePBX del hospital y reproduce un
 # IVR (igual al 2184) cuando alguien marca esos internos.
 #
-# Instalacion y actualizacion (una sola linea, auto-detecta):
+# Instalacion (una linea):
 #   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh | sudo bash
-# Si ya esta instalado -> actualiza sin tocar Asterisk/deps. Si no -> instala completo.
-# Para forzar reinstalacion completa: ... | sudo bash -s -- --full
+#
+# Actualizar (sin reinstalar Asterisk/deps):
+#   curl -fsSL https://raw.githubusercontent.com/gatoambroggio/ubntpagingsystem/main/src/zetronpoc/instalador.sh | sudo bash -s -- --update
 # ============================================================================
 set -euo pipefail
 
@@ -20,12 +21,6 @@ DB="${APP_DIR}/database/zetronpoc.db"
 VERSION="2.0"
 UPDATE=0
 [[ "${1:-}" == "--update" ]] && UPDATE=1
-[[ "${1:-}" == "--full" ]] && UPDATE=0
-# Auto-detectar: si ya hay una instalacion (existe la BD), actualizar en vez de reinstalar.
-if [[ $UPDATE -eq 0 ]] && [[ -f "${DB}" ]]; then
-  echo "==> Instalacion previa detectada -> modo actualizacion (usar --full para reinstalar)"
-  UPDATE=1
-fi
 
 G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; NC="\033[0m"
 log(){ echo -e "${G}[OK]${NC}   $*"; }
@@ -69,8 +64,9 @@ for f in pogsag_handler.py pogsag_check.py cola_worker.py; do
 done
 # Quitar cron y logrotate viejos
 rm -f /etc/cron.d/pogsag-cleanup /etc/logrotate.d/pogsag 2>/dev/null || true
-# Detener Asterisk (los reload en cadena dejan "reload already in progress" y traban todo)
-systemctl stop asterisk 2>/dev/null || true
+# Recargar Asterisk para que solte endpoints/registros viejos
+asterisk -rx "pjsip reload" 2>/dev/null || true
+asterisk -rx "dialplan reload" 2>/dev/null || true
 log "Sistema anterior limpio."
 
 # ============================ 1. DEPENDENCIAS ================================
@@ -102,7 +98,6 @@ dl "${SRC}/backend/app.py" "${APP_DIR}/backend/app.py"
 chmod +x "${APP_DIR}/backend/app.py"
 dl "${SRC}/frontend/admin.html" "${APP_DIR}/frontend/admin.html"
 dl "${SRC}/frontend/index.html" "${APP_DIR}/frontend/index.html"
-dl "${SRC}/frontend/historial.html" "${APP_DIR}/frontend/historial.html"
 
 dl "${SRC}/database/db_manager.py" "${APP_DIR}/database/db_manager.py"
 chmod +x "${APP_DIR}/database/db_manager.py"
@@ -160,7 +155,7 @@ PYEOF
 chmod 640 "${DB}" 2>/dev/null || true
 chown "${AST_USER}:${AST_USER}" "${DB}" 2>/dev/null || true
 
-# Seed demo messages so Dashboard/Historial show data on a fresh install
+# Seed demo data so Dashboard/Historial/Logs/Auditoria show content on a fresh install
 python3 - <<'PYEOF'
 import sqlite3, datetime
 DB='/opt/zetronpoc/database/zetronpoc.db'
@@ -171,13 +166,28 @@ try:
         now=datetime.datetime.now()
         for i in range(6):
             ts=(now-datetime.timedelta(days=i, hours=i)).strftime("%Y-%m-%d %H:%M:%S")
-            est='enviado' if i%3 else ('encolado' if i%3==1 else 'error')
+            est='enviado' if i%3==0 else ('encolado' if i%3==1 else 'error')
             c.execute("INSERT INTO bitacora (fecha_hora,interno_origen,codigo,cap_code,mensaje,baudios,estado,observaciones,cola_id) VALUES (?,?,?,?,?,?,?,?,?)",
-                (ts,'200'+str(i%3),'TEST0'+str(i+1),'1234567','Mensaje de prueba '+str(i+1),'512',est,'',None))
-        c.commit()
-        print("[seed] 6 mensajes demo insertados en bitacora")
-    else:
-        print("[seed] bitacora ya tiene %d registros, no se insertan demos" % n)
+                (ts,'200'+str(i%3),'TEST0'+str(i+1),'1234567','Mensaje de prueba '+str(i+1),512,est,'',None))
+        c.commit(); print("[seed] 6 mensajes demo en bitacora")
+    nl=c.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+    if nl==0:
+        now=datetime.datetime.now()
+        for i in range(8):
+            ts=(now-datetime.timedelta(hours=i)).strftime("%Y-%m-%d %H:%M:%S")
+            nivel=['info','info','warn','error'][i%4]
+            orig=['api','cola','mmdvm','pbx'][i%4]
+            c.execute("INSERT INTO logs (fecha_hora,nivel,origen,mensaje) VALUES (?,?,?,?)",
+                (ts,nivel,orig,'Evento de demostracion #%d'%i))
+        c.commit(); print("[seed] 8 logs demo")
+    na=c.execute("SELECT COUNT(*) FROM auditoria").fetchone()[0]
+    if na==0:
+        now=datetime.datetime.now()
+        for i in range(4):
+            ts=(now-datetime.timedelta(hours=i)).strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("INSERT INTO auditoria (fecha_hora,usuario,accion,entidad,entidad_id,detalle,ip) VALUES (?,?,?,?,?,?,?)",
+                (ts,'admin',['login','guardar','aplicar','enviar'][i%4],['auth','config','mmdvm','mensaje'][i%4],'','demo','127.0.0.1'))
+        c.commit(); print("[seed] 4 auditoria demo")
     c.close()
 except Exception as e:
     print("[seed] WARN: %s" % e)
@@ -199,8 +209,9 @@ PYEOF
 chown "${AST_USER}:${AST_USER}" "${AST_ETC}/pjsip.conf" 2>/dev/null || true
 
 # ============================ 7. LOCUCIONES IVR ============================
-echo "==> 7/10 Generando locuciones del IVR (solo faltantes)..."
-gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
+if [[ $UPDATE -eq 0 ]]; then
+  echo "==> 7/10 Generando locuciones del IVR..."
+  gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
     espeak -v es -s 160 "$2" -w "${out%.gsm}.wav" 2>/dev/null && sox "${out%.gsm}.wav" -r 8000 -c 1 "$out" 2>/dev/null || warn "No se pudo generar $1"
     rm -f "${out%.gsm}.wav"; }
   gen despues-del-tono-marque-codigo "Despues del tono marque el numero de codigo"
@@ -213,6 +224,9 @@ gen(){ local out="${APP_DIR}/audio/$1.gsm"; [[ -f "$out" ]] && return
   sox -n -r 8000 -c 1 "${APP_DIR}/audio/beep.gsm" synth 0.2 sine 1000 2>/dev/null || warn "beep no generado"
   cp "${APP_DIR}"/audio/*.gsm /var/lib/asterisk/sounds/ 2>/dev/null || true
   chown -R "${AST_USER}:${AST_USER}" /var/lib/asterisk/sounds 2>/dev/null || true
+else
+  echo "==> 7/10 Locuciones IVR (omitidas en --update)"
+fi
 
 # ============================ 8. PERMISOS ==================================
 echo "==> 8/10 Ajustando permisos..."
@@ -225,42 +239,21 @@ cat > /etc/logrotate.d/zetronpoc <<EOF
 ${APP_DIR}/logs/*.log { daily rotate 14 compress missingok notifempty }
 EOF
 systemctl daemon-reload
-systemctl enable asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
-# REINICIO LIMPIO (no reload): un solo restart carga pjsip + dialplan de una vez
-# sin el "reload already in progress" que dejaba pjsip y el dialplan sin cargar.
-systemctl restart asterisk 2>/dev/null || true
-for _ in $(seq 1 15); do
-  asterisk -rx "core show uptime" >/dev/null 2>&1 && break
+systemctl enable --now asterisk 2>/dev/null || warn "Asterisk no pudo activarse"
+asterisk -rx "dialplan reload" 2>/dev/null || warn "No se pudo recargar dialplan"
+asterisk -rx "pjsip reload" 2>/dev/null || true
+sleep 1
+# Verificar que res_pjsip cargo el transporte; si no, forzar recarga del modulo
+if ! asterisk -rx "pjsip show transports" 2>/dev/null | grep -q "transport-udp"; then
+  warn "pjsip no cargo el transporte. Reintentando..."
+  asterisk -rx "module reload res_pjsip.so" 2>/dev/null || true
+  asterisk -rx "pjsip reload" 2>/dev/null || true
   sleep 1
-done
-for n in $(sqlite3 "${DB}" "SELECT numero FROM extensiones WHERE activo=1" 2>/dev/null); do
-  asterisk -rx "pjsip send register reg-${n}" 2>/dev/null || true
-done
-asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || warn "transport-udp no visible tras restart"
-systemctl enable zetronpoc-api 2>/dev/null || true
-systemctl restart zetronpoc-api 2>/dev/null || warn "API no pudo reiniciarse"
-systemctl enable zetronpoc-cola 2>/dev/null || true
-systemctl restart zetronpoc-cola 2>/dev/null || true
+fi
+asterisk -rx "pjsip show transports" 2>/dev/null | head -6 || true
+systemctl enable --now zetronpoc-api 2>/dev/null || warn "API no pudo activarse"
+systemctl enable --now zetronpoc-cola 2>/dev/null || true
 sleep 2
-
-# ============================ 9.5 MMDVM (automatico) =========================
-echo "==> 9.5/10 Modulo MMDVM (MMDVMHost + POCSAG serial)..."
-MMDVM_NEED=1
-if [[ -x /usr/local/bin/MMDVM-Host ]] && systemctl is-active --quiet mmdvmhost 2>/dev/null; then
-  log "MMDVMHost ya instalado y activo. Se omite."
-  MMDVM_NEED=0
-fi
-if [[ $MMDVM_NEED -eq 1 ]]; then
-  if curl -fsSL "${REPO}/instalador_mmdvm.sh" -o /tmp/instalador_mmdvm.sh 2>/dev/null; then
-    if bash /tmp/instalador_mmdvm.sh; then
-      log "MMDVMHost instalado y servicio mmdvmhost activo."
-    else
-      warn "Instalacion de MMDVM fallo. Reintenta: curl -fsSL ${REPO}/instalador_mmdvm.sh | sudo bash"
-    fi
-  else
-    warn "No se pudo descargar instalador_mmdvm.sh. MMDVM queda pendiente (pagina /mmdvm)."
-  fi
-fi
 
 # ============================ 10. CHEQUEO =================================
 echo "==> 10/10 Chequeo final..."
@@ -284,7 +277,6 @@ echo "    2) Extensiones -> editar cada interno con su clave real"
 echo "    3) Extensiones -> Aplicar a Asterisk  (genera pjsip_zetronpoc.conf)"
 echo "    4) La columna 'Registro' debe quedar en Registered"
 echo "    5) Probar IVR: marcar *99 desde la central (escucha dos beeps)"
-echo "    6) MMDVM: ya instalado automaticamente. Configura callsign/puerto/frecuencia en Parametros y pulsa 'Aplicar a la placa'"
 echo ""
 echo "  Verificar por consola:"
 echo "    sudo asterisk -rx 'pjsip show registrations'"
