@@ -1,4 +1,4 @@
--- schema.sql - ZetronPOC v2.0 (Zetron 640 / DaptX-Xtra)
+-- schema.sql - ZetronPOC v2.0 (MMDVM serial)
 -- SQLite schema. Config es clave/valor para maxima flexibilidad.
 
 CREATE TABLE IF NOT EXISTS config (
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS pagers (
   nombre      TEXT DEFAULT '',
   apellido    TEXT DEFAULT '',
   area        TEXT DEFAULT '',
-  baudios     INTEGER DEFAULT 512,
+  baudios     INTEGER DEFAULT 1200,
   funcion     TEXT DEFAULT 'alphanumeric',
   descripcion TEXT DEFAULT '',
   activo      INTEGER DEFAULT 1
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS grupos (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   codigo  TEXT UNIQUE NOT NULL,
   nombre  TEXT DEFAULT '',
-  baudios INTEGER DEFAULT 512,
+  baudios INTEGER DEFAULT 1200,
   activo  INTEGER DEFAULT 1
 );
 
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS bitacora (
   mensaje       TEXT,
   baudios       INTEGER,
   estado        TEXT,
-  observaciones TEXT
+  observaciones TEXT,
+  cola_id       INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS cola_envios (
@@ -104,14 +105,14 @@ CREATE TABLE IF NOT EXISTS auditoria (
   ip          TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_bitacora_fecha ON bitacora(fecha_hora);
-CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_envios(estado);
-
 CREATE TABLE IF NOT EXISTS logs (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  fecha_hora  TEXT NOT NULL,
-  nivel       TEXT,
-  origen      TEXT,
-  mensaje     TEXT
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  fecha_hora TEXT,
+  nivel     TEXT,
+  origen    TEXT,
+  mensaje   TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_logs_fecha ON logs(fecha_hora DESC);
+
+CREATE INDEX IF NOT EXISTS idx_bitacora_fecha ON bitacora(fecha_hora);
+CREATE INDEX IF NOT EXISTS idx_bitacora_cola ON bitacora(cola_id);
+CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_envios(estado);
