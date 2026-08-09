@@ -22,7 +22,7 @@ INSERT OR IGNORE INTO config(clave,valor) VALUES('response_timeout','15');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('test_mode','1');
 
 -- === ZETRON 640 - Encoder POCSAG ===
-INSERT OR IGNORE INTO config(clave,valor) VALUES('baudios_default','512');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('baudios_default','1200');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('preamble_bits','576');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('warmup_512_ms','750');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('warmup_1200_ms','1500');
@@ -55,6 +55,28 @@ INSERT OR IGNORE INTO config(clave,valor) VALUES('antenna_impedance','50');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('gpio_chip','gpiochip0');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('gpio_pin','17');
 
+-- === MMDVM (modulo serial) ===
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_callsign','LU1ABC');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_serial_port','/dev/ttyUSB0');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_baud','115200');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_frequency','433.800');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_duplex','0');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_pocsag_baud','1200');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_tx_invert','1');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_tx_level','50');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_tx_offset','0');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_ptt_delay','100');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_display','None');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_remote_port','7675');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_enable_pocsag','1');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_dapnet_enable','0');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_dapnet_address','');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_dapnet_passcode','');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_mqtt_enable','1');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_mqtt_host','127.0.0.1');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_mqtt_port','1883');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('mmdvm_mqtt_name','host');
+
 -- === Admin ===
 INSERT OR IGNORE INTO config(clave,valor) VALUES('admin_user','admin');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('admin_pass','admin123');
@@ -68,11 +90,22 @@ INSERT OR IGNORE INTO config(clave,valor) VALUES('smtp_from','');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('smtp_secure','tls');
 INSERT OR IGNORE INTO config(clave,valor) VALUES('backup_email','');
 
--- === Tema (futurista) ===
-INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_acc','#00f0ff');
-INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_acc2','#ff00d4');
-INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_bg','#05060f');
-INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_panel','#0a0f1f');
+-- === Front (pagina publica) ===
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_titulo','MediGuard OS');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_subtitulo','Despacho de mensajeria');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_logo','⏧');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_color_primario','#1d4ed8');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_color_acento','#0ea5e9');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_color_fondo','#f1f5f9');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_color_texto','#0f172a');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_seccion_enviar','1');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('front_seccion_historial','1');
+
+-- === Tema admin (claro) ===
+INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_acc','#1d4ed8');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_acc2','#0ea5e9');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_bg','#f1f5f9');
+INSERT OR IGNORE INTO config(clave,valor) VALUES('theme_panel','#ffffff');
 
 -- === Extensiones 2000-2010 ===
 INSERT OR IGNORE INTO extensiones(numero,password,contexto,descripcion,activo) VALUES('2000','CAMBIAR_2000','from-hospital','Interno hospitalario 2000',1);
@@ -89,10 +122,10 @@ INSERT OR IGNORE INTO extensiones(numero,password,contexto,descripcion,activo) V
 
 -- === Pager de prueba ===
 INSERT OR IGNORE INTO pagers(codigo,cap_code,nombre,apellido,area,baudios,funcion,descripcion,activo)
-  VALUES('100','1234567','Guardia','Medica','Emergencias',512,'alphanumeric','Pager de prueba',1);
+  VALUES('100','1234567','Guardia','Medica','Emergencias',1200,'alphanumeric','Pager de prueba',1);
 
 -- === Grupo de prueba ===
-INSERT OR IGNORE INTO grupos(codigo,nombre,baudios,activo) VALUES('CODE','Codigo unico',512,1);
+INSERT OR IGNORE INTO grupos(codigo,nombre,baudios,activo) VALUES('CODE','Codigo unico',1200,1);
 INSERT OR IGNORE INTO grupo_miembros(grupo_id,cap_code,orden)
   SELECT g.id,'1234567',0 FROM grupos g WHERE g.codigo='CODE';
 
